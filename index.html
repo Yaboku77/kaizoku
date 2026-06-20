@@ -1,335 +1,76 @@
+
 <!DOCTYPE html>
-<html lang="en" class="scroll-smooth">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AnimeKaizoku</title>
-    
-        <!--Meta Icon-->
-      <link href='/img/20250417_230627.png' rel='apple-touch-icon'/>
-        <link href='/img/20250417_230627.png' rel='apple-touch-icon' sizes='57x57'/>
-          <link href='/img/20250417_230627.png' rel='apple-touch-icon' sizes='72x72'/>
-            <link href='/img/20250417_230627.png' rel='apple-touch-icon' sizes='76x76'/>
-              <link href='/img/20250417_230627.png' rel='apple-touch-icon' sizes='114x114'/>
-                <link href='/img/20250417_230627.png' rel='apple-touch-icon' sizes='120x120'/>
-                  <link href='/img/20250417_230627.png' sizes='144x144'/>
-                    <link href='/img/20250417_230627.png' rel='apple-touch-icon' sizes='152x152'/>
-                      <link href='/img/20250417_230627.png' rel='apple-touch-icon' sizes='180x180'/>
-
+    <title>Swiggy Free Cash Links</title>
     <script src="https://cdn.tailwindcss.com"></script>
-
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA==" crossorigin="anonymous" referrerpolicy="no-referrer" />
-
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;700&display=swap" rel="stylesheet">
-
-    <style>
-        body {
-            font-family: 'Poppins', sans-serif;
-            background-color: #121212;
-            overflow-x: hidden;
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        swiggy: '#fc8019',
+                        swiggyDark: '#e37316'
+                    }
+                }
+            }
         }
-
-        .hero-bg {
-            background-image: url('https://i.ibb.co/9B0ZLdK/megumi-fushiguro-8k-bm-Zs-Z2m-Um-Zqara-Wkp-JRnb-W1lr-WZt-ZWU.jpg');
-            background-size: cover;
-            background-position: center;
-            background-repeat: no-repeat;
-            background-attachment: fixed;
-        }
-
-        .btn-gradient {
-            background-image: linear-gradient(to right, #8A2BE2, #4169E1);
-            transition: background-image 0.3s ease;
-        }
-        .btn-gradient:hover {
-            background-image: linear-gradient(to right, #7B24CB, #3A5CC7);
-        }
-
-         #menu-button span {
-            display: block;
-            width: 25px;
-            height: 3px;
-            margin: 5px auto;
-            background-color: #ffffff;
-            transition: all 0.3s ease-in-out;
-        }
-
-        #mobile-menu {
-            transition: opacity 0.3s ease-in-out, transform 0.3s ease-in-out;
-        }
-
-        #contact-section {
-            transition: opacity 0.4s ease-in-out, transform 0.4s ease-in-out;
-            transform: translateY(100%);
-        }
-        body.contact-visible #contact-section {
-            opacity: 1;
-            pointer-events: auto;
-            transform: translateY(0%);
-        }
-
-        body.contact-visible > header,
-        body.contact-visible > main,
-        body.contact-visible > footer#footer {
-            opacity: 0;
-            pointer-events: none;
-            transition: opacity 0.3s ease-in-out;
-        }
-        body > header,
-        body > main,
-        body > footer#footer {
-             opacity: 1;
-             pointer-events: auto;
-             transition: opacity 0.3s ease-in-out 0.1s;
-        }
-
-
-        .animate-on-scroll {
-            opacity: 0;
-            transform: translateY(30px);
-            transition: opacity 0.6s ease-out, transform 0.6s ease-out;
-        }
-        .animate-on-scroll.delay-1 { transition-delay: 0.1s; }
-        .animate-on-scroll.delay-2 { transition-delay: 0.2s; }
-        .animate-on-scroll.delay-3 { transition-delay: 0.3s; }
-
-        .animate-on-scroll.is-visible {
-            opacity: 1;
-            transform: translateY(0);
-        }
-
-        @keyframes fadeIn {
-            from { opacity: 0; }
-            to { opacity: 1; }
-        }
-        @keyframes fadeInUp {
-            from { opacity: 0; transform: translateY(20px); }
-            to { opacity: 1; transform: translateY(0); }
-        }
-
-        .hero-text-1 { animation: fadeInUp 0.8s ease-out 0.2s backwards; }
-        .hero-text-2 { animation: fadeInUp 0.8s ease-out 0.4s backwards; }
-        .hero-text-3 { animation: fadeInUp 0.8s ease-out 0.6s backwards; }
-
-        .network-card {
-            transition: transform 0.3s ease-out, box-shadow 0.3s ease-out;
-        }
-        .network-card:hover {
-            transform: scale(1.05);
-            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
-        }
-
-        .social-svg-icon {
-             width: 1.5rem;
-             height: 1.5rem;
-             border-radius: 9999px;
-             display: inline-block;
-             vertical-align: middle;
-             filter: grayscale(100%);
-             transition: filter 0.3s ease;
-        }
-        .social-svg-icon:hover {
-             filter: grayscale(0%);
-        }
-        
-        .social-svg-icon-2 {
-             width: 2.5rem;
-             height: 2.5rem;
-             margin-bottom: 15px;
-             border-radius: 9999px;
-             display: inline-block;
-             vertical-align: middle;
-             transition: filter 0.3s ease;
-        }
-
-        .form-input {
-            background-color: #2d2d2d;
-            border: 1px solid #4a4a4a;
-            color: #ffffff;
-            border-radius: 0.375rem;
-            padding: 0.75rem 1rem;
-            width: 100%;
-            transition: border-color 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
-        }
-        .form-input:focus {
-            outline: none;
-            border-color: #4169E1;
-            box-shadow: 0 0 0 2px rgba(65, 105, 225, 0.5);
-        }
-
-    </style>
+    </script>
 </head>
-<body class="bg-gray-900 text-white">
+<body class="bg-gray-50 min-h-screen p-4 flex justify-center font-sans">
+    <div class="max-w-md w-full bg-white rounded-2xl shadow-xl p-6 my-4 border border-gray-100">
+        <!-- Header -->
+        <div class="text-center mb-8">
+            <h1 class="text-2xl font-bold text-gray-800 mb-2">🎁 Swiggy Rewards</h1>
+            <p class="text-gray-600 font-medium">Sabhi links par ek ek karke click karo and free cash lelo 😁</p>
+        </div>
 
-    <header class="absolute top-0 left-0 right-0 z-30 py-4 px-6 md:px-10">
-        <nav class="container mx-auto flex justify-between items-center">
-            <a href="/" class="text-2xl font-bold tracking-wider text-white">
-                <span>Kai</span><span class="text-purple-400">zoku</span>
-            </a>
-
-            <button id="menu-button" class="md:hidden focus:outline-none">
-                <span></span>
-                <span></span>
-                <span></span>
-            </button>
-
-            <div class="hidden md:flex space-x-6 items-center">
-                 <a href="#hero" class="text-gray-300 hover:text-white transition duration-300">Home</a>
-                 <a href="#networks" class="text-gray-300 hover:text-white transition duration-300">Networks</a>
-                 <a href="#footer" class="text-gray-300 hover:text-white transition duration-300">About</a>
-                 <a href="#" id="contact-desktop-link" class="text-gray-300 hover:text-white transition duration-300">Contact</a>
-            </div>
-        </nav>
-    </header>
-
-    <div id="mobile-menu" class="fixed inset-0 bg-gray-900 bg-opacity-95 z-50 flex flex-col items-center justify-center space-y-6 text-xl opacity-0 translate-x-full pointer-events-none">
-        <button id="close-menu-button" class="absolute top-6 right-6 text-3xl">&times;</button>
-        <a href="#hero" class="hover:text-indigo-400 menu-link">Home</a>
-        <a href="#networks" class="hover:text-indigo-400 menu-link">Networks</a>
-        <a href="#footer" class="hover:text-indigo-400 menu-link">About</a>
-        <a href="#" id="contact-menu-link" class="hover:text-indigo-400">Contact</a>
+        <!-- Buttons Grid -->
+        <div class="flex flex-col gap-3" id="links-container">
+            <!-- Buttons will be injected here via JavaScript -->
+        </div>
+        
+        <div class="mt-8 text-center text-sm text-gray-400">
+            <p>Note: Make sure your Swiggy app is installed and logged in.</p>
+        </div>
     </div>
 
-    <main>
-        <section id="hero" class="relative hero-bg h-screen flex items-center justify-center text-center text-white px-4 overflow-hidden">
-            <div class="absolute inset-0 bg-black opacity-50"></div>
-            <div class="relative z-10">
-                <p class="text-lg md:text-xl mb-2 font-light hero-text-1">Hello, I'm</p>
-                <h1 class="text-5xl md:text-7xl font-bold mb-3 leading-tight hero-text-2">
-                    <span>Anime</span> <span class="text-purple-400">Kaizoku</span>
-                </h1>
-                <p class="text-xl md:text-2xl font-light hero-text-3">I'am a Web Developer & <span class="font-semibold">PIRATE</span> .</p>
-            </div>
-        </section>
-
-        <section id="networks" class="py-16 md:py-24 bg-[#121212]">
-            <div class="container mx-auto px-6 text-center">
-                <h2 class="text-3xl md:text-4xl font-bold mb-12 animate-on-scroll">Our Networks</h2>
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-8 max-w-5xl mx-auto">
-                    <div class="network-card bg-[#1E1E1E] p-8 rounded-xl shadow-lg flex flex-col items-center animate-on-scroll delay-1">
-                        <i class="fab fa-telegram text-4xl mb-4 text-blue-400"></i>
-                        <h3 class="text-xl font-semibold mb-2">Telegram</h3>
-                        <p class="text-gray-400 mb-6 text-sm flex-grow">More Than 2k Community On Telegram</p>
-                        <a href="https://t.me/newkaizoku" class="btn-gradient text-white font-medium py-2 px-6 rounded-lg transition duration-300 w-full text-center">Join Us</a>
-                    </div>
-                    
-                </div>
-            </div>
-        </section>
-    </main>
-
-    <footer id="footer" class="bg-[#121212] py-12">
-        <div class="container mx-auto px-6 text-center text-gray-400 animate-on-scroll">
-            <h3 class="text-2xl font-semibold text-white mb-3">AnimeKaizoku</h3>
-            <p class="mb-6">To Know More About Us Follow Us On Our Social Media</p>
-            <div class="flex justify-center items-center space-x-6 mb-8">
-                <a href="https://t.me/newkaizoku" aria-label="Telegram" class="text-2xl hover:text-blue-400 transition duration-300"><i class="fab fa-telegram"></i></a>
-                <a href="#" aria-label="YouTube" class="text-2xl hover:text-red-500 transition duration-300"><i class="fab fa-youtube"></i></a>
-                <a href="https://animekaizoku.xyz/" aria-label="Custom Social Link" class="text-gray-400 transition duration-300"><img src="https://raw.githubusercontent.com/Yaboku77/Yaboku/refs/heads/main/img/BMh5hxtm.svg" alt="Custom Link" class="social-svg-icon"></a>
-            </div>
-            <p class="text-sm">&copy; <span id="current-year"></span> CopyRight By Kaizoku</p>
-        </div>
-    </footer>
-
-    <section id="contact-section" class="fixed inset-0 z-40 flex items-center justify-center bg-gray-900 p-4 opacity-0 pointer-events-none">
-         <button id="close-contact-button" class="absolute top-6 right-6 text-gray-400 hover:text-white text-4xl font-light z-50">&times;</button>
-        <div class="max-w-lg w-full">
-            <h2 class="text-3xl md:text-4xl font-bold mb-8 text-center text-white">Contact Us</h2>
-            <form action="#" method="POST" class="space-y-5">
-                <div>
-                    <label for="contact-name" class="block text-sm font-medium text-gray-300 mb-1">Name</label>
-                    <input type="text" name="name" id="contact-name" required class="form-input">
-                </div>
-                <div>
-                    <label for="contact-email" class="block text-sm font-medium text-gray-300 mb-1">Email</label>
-                    <input type="email" name="email" id="contact-email" required class="form-input">
-                </div>
-                <div>
-                    <label for="contact-message" class="block text-sm font-medium text-gray-300 mb-1">Message</label>
-                    <textarea name="message" id="contact-message" rows="5" required class="form-input"></textarea>
-                </div>
-                <div class="pt-3">
-                    <button type="submit" disabled class="w-full btn-gradient text-white font-semibold py-3 px-6 rounded-lg transition duration-300 disabled:opacity-60 disabled:cursor-not-allowed">
-                        Send Message (Disabled)
-                    </button>
-                     <p class="text-xs text-gray-500 mt-2 text-center">Note: Form submission requires server-side code.</p>
-                </div>
-            </form>
-        </div>
-    </section>
-
-
     <script>
-        const menuButton = document.getElementById('menu-button');
-        const mobileMenu = document.getElementById('mobile-menu');
-        const closeMenuButton = document.getElementById('close-menu-button');
-        const menuLinks = mobileMenu.querySelectorAll('.menu-link');
-        const contactMenuLink = document.getElementById('contact-menu-link');
-        const contactDesktopLink = document.getElementById('contact-desktop-link'); // Added desktop link
-        const contactSection = document.getElementById('contact-section');
-        const closeContactButton = document.getElementById('close-contact-button');
-        const bodyElement = document.body;
+        const links = [
+            "https://r.swiggy.com/fathersday/fathers_day-29Rkoa4bF4",
+            "https://r.swiggy.com/fathersday/fathers_day-1rOlSwiYcr",
+            "https://r.swiggy.com/fathersday/fathers_day-29RkoOEOk2",
+            "https://r.swiggy.com/fathersday/fathers_day-1xqP5cRDpQ",
+            "https://r.swiggy.com/fathersday/fathers_day-CGXTpdNao",
+            "https://r.swiggy.com/fathersday/fathers_day-5otrAnpaj",
+            "https://r.swiggy.com/fathersday/fathers_day-3VyuWLs1Uv3",
+            "https://r.swiggy.com/fathersday/fathers_day-3OpRLomFJJE",
+            "https://r.swiggy.com/fathersday/fathers_day-3RNHLpyLyK",
+            "https://r.swiggy.com/fathersday/fathers_day-1rOlSvSQ6f",
+            "https://r.swiggy.com/fathersday/fathers_day-3RNHLpyLyK",
+            "https://r.swiggy.com/fathersday/fathers_day-9ggQo4GQJ"
+        ];
 
-        function openMenu() {
-            mobileMenu.classList.remove('opacity-0', 'translate-x-full', 'pointer-events-none');
-            mobileMenu.classList.add('opacity-100', 'translate-x-0', 'pointer-events-auto');
-        }
+        const container = document.getElementById('links-container');
 
-        function closeMenu() {
-            mobileMenu.classList.add('opacity-0', 'translate-x-full', 'pointer-events-none');
-            mobileMenu.classList.remove('opacity-100', 'translate-x-0', 'pointer-events-auto');
-        }
-
-        function showContactSection() {
-             bodyElement.classList.add('contact-visible');
-        }
-
-        function hideContactSection() {
-             bodyElement.classList.remove('contact-visible');
-        }
-
-        menuButton.addEventListener('click', openMenu);
-        closeMenuButton.addEventListener('click', closeMenu);
-
-        menuLinks.forEach(link => {
-            link.addEventListener('click', closeMenu);
+        links.forEach((link, index) => {
+            const a = document.createElement('a');
+            a.href = link;
+            a.target = "_blank"; // Opens in a new tab
+            a.rel = "noopener noreferrer";
+            a.className = "group w-full flex items-center justify-between bg-swiggy hover:bg-swiggyDark text-white font-semibold py-3 px-5 rounded-xl transition-all duration-200 shadow-md hover:shadow-lg active:scale-[0.98]";
+            
+            a.innerHTML = `
+                <span>Claim Link ${index + 1}</span>
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 transform group-hover:translate-x-1 transition-transform" viewBox="0 0 20 20" fill="currentColor">
+                    <path fill-rule="evenodd" d="M10.293 3.293a1 1 0 011.414 0l6 6a1 1 0 010 1.414l-6 6a1 1 0 01-1.414-1.414L14.586 11H3a1 1 0 110-2h11.586l-4.293-4.293a1 1 0 010-1.414z" clip-rule="evenodd" />
+                </svg>
+            `;
+            
+            container.appendChild(a);
         });
-
-        contactMenuLink.addEventListener('click', (event) => {
-            event.preventDefault();
-            closeMenu();
-            setTimeout(showContactSection, 50);
-        });
-
-        // Added listener for desktop contact link
-        contactDesktopLink.addEventListener('click', (event) => {
-             event.preventDefault();
-             showContactSection();
-        });
-
-        closeContactButton.addEventListener('click', hideContactSection);
-
-        document.getElementById('current-year').textContent = new Date().getFullYear();
-
-        const animatedElements = document.querySelectorAll('.animate-on-scroll');
-        const observer = new IntersectionObserver((entries) => {
-            entries.forEach(entry => {
-                if (entry.isIntersecting) {
-                    entry.target.classList.add('is-visible');
-                }
-            });
-        }, {
-            threshold: 0.1
-        });
-        animatedElements.forEach(el => {
-            observer.observe(el);
-        });
-
     </script>
-
 </body>
 </html>
-
-
