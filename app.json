@@ -1,0 +1,34 @@
+{
+  "expo": {
+    "name": "Kaizoku",
+    "slug": "kaizoku",
+    "version": "1.0.1",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "icon": "./kaizoku.png",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#000000"
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.kaizoku.stream"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./kaizoku.png",
+        "backgroundColor": "#000000"
+      },
+      "package": "com.kaizoku.stream",
+      "versionCode": 1
+    },
+    "plugins": [
+      [
+        "expo-av",
+        {
+          "microphonePermission": false
+        }
+      ]
+    ]
+  }
+}
