@@ -128,7 +128,7 @@ export interface AnimeDetail {
 export interface Episode {
   number: string;
   title?: string;
-  href: string;
+  href?: string;
   id?: string;
   dataIds?: string;
   dataMal?: string;       // MAL ID — used by Kiwi Mapper API

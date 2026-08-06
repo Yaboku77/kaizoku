@@ -132,8 +132,8 @@ export default function ScheduleScreen({ navigation }) {
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.timelineContent}>
         {loading ? (
           // Skeleton rows
-          [1, 2, 3, 4, 5].map(i => (
-            <View key={`skel-${i}`} style={styles.scheduleRow}>
+          [1, 2, 3, 4, 5].map((i, index) => (
+            <View key={`skel-${i}`} style={[styles.scheduleRow, index === 0 && { marginTop: 24 }]}>
               <AnimatedShimmer style={{ width: 48, height: 20, borderRadius: 4 }} />
               <View style={[styles.card, { overflow: 'hidden' }]}>
                 <AnimatedShimmer style={{ width: 70, height: '100%' }} />
@@ -147,8 +147,8 @@ export default function ScheduleScreen({ navigation }) {
         ) : schedule.length === 0 ? (
           <Text style={styles.emptyText}>No schedule available for this date.</Text>
         ) : (
-          schedule.map(item => (
-            <View key={item.id} style={styles.scheduleRow}>
+          schedule.map((item, index) => (
+            <View key={item.id} style={[styles.scheduleRow, index === 0 && { marginTop: 24 }]}>
               {/* Time */}
               <Text style={styles.airTime}>{format24h(item.airingAt)}</Text>
               {/* Card */}
@@ -207,7 +207,7 @@ const styles = StyleSheet.create({
   dateDayNameActive: { color: '#000' },
   dateMonthDay: { color: '#9ca3af', fontSize: 12, fontWeight: '500', marginTop: 4 },
   dateMonthDayActive: { color: '#4b5563', fontWeight: '600' },
-  timelineContent: { paddingLeft: 20, paddingRight: 20, paddingTop: 24, paddingBottom: 120, minHeight: 300 },
+  timelineContent: { paddingLeft: 20, paddingRight: 20, paddingBottom: 120, minHeight: 300 },
   scheduleRow: {
     flexDirection: 'row', alignItems: 'center', gap: 16, marginBottom: 20,
     paddingLeft: 12, borderLeftWidth: 3, borderLeftColor: '#fff',

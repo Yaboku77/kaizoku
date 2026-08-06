@@ -39,10 +39,23 @@ export interface SubtitleTrack {
   default?: boolean;
 }
 
+export interface SkipTime {
+  start: number;
+  end: number;
+}
+
+export interface QualitySource {
+  file: string;
+  label?: string;
+}
+
 export interface ExtractedStream {
   m3u8: string;
   referer: string;
   tracks: SubtitleTrack[];
+  intro?: SkipTime;
+  outro?: SkipTime;
+  allSources?: QualitySource[];
 }
 
 let _keysCache: Record<string, string> | null = null;
@@ -75,8 +88,20 @@ async function _doMegaplay(
     timeout: 5000,
   });
 
+  const rawSources: any[] = Array.isArray(data?.sources) ? data.sources : (data?.sources?.file ? [{ file: data.sources.file }] : []);
+  const allSources: QualitySource[] = rawSources.map(s => ({
+    file: s.file || s.url || '',
+    label: s.label || s.quality || '',
+  })).filter(s => s.file);
+
   let m3u8: string | undefined = data?.sources?.file;
+  if (!m3u8) {
+    const autoSource = allSources.find(s => s.label?.toLowerCase() === 'auto' || s.label?.toLowerCase() === 'default');
+    m3u8 = autoSource?.file || allSources[0]?.file;
+  }
   const tracks: SubtitleTrack[] = data?.tracks || [];
+  const intro = data?.intro;
+  const outro = data?.outro;
 
   if (m3u8 && m3u8.includes('mewstream.buzz')) {
     let replacementHost = '1oe.lostproject.club';
@@ -91,9 +116,21 @@ async function _doMegaplay(
       parsedM3u8.host = replacementHost;
       m3u8 = parsedM3u8.toString();
     } catch (_) { }
+    
+    if (allSources) {
+      allSources.forEach(source => {
+        if (source.file && source.file.includes('mewstream.buzz')) {
+          try {
+            const parsedSource = new URL(source.file);
+            parsedSource.host = replacementHost;
+            source.file = parsedSource.toString();
+          } catch (_) { }
+        }
+      });
+    }
   }
 
-  return m3u8 ? { m3u8, referer, tracks } : null;
+  return m3u8 ? { m3u8, referer, tracks, intro, outro, allSources } : null;
 }
 
 async function _doMegacloud(
@@ -125,9 +162,17 @@ async function _doMegacloud(
   });
 
   const tracks: SubtitleTrack[] = data?.tracks || [];
+  const intro = data?.intro;
+  const outro = data?.outro;
+
+  const rawSources: any[] = Array.isArray(data?.sources) ? data.sources : (data?.sources?.[0]?.file ? [data.sources[0]] : []);
+  const allSources: QualitySource[] = rawSources.map(s => ({
+    file: s.file || s.url || '',
+    label: s.label || s.quality || '',
+  })).filter(s => s.file);
 
   if (!data.encrypted || data.sources?.[0]?.file.includes('.m3u8')) {
-    return data.sources?.[0]?.file ? { m3u8: data.sources[0].file, referer, tracks } : null;
+    return data.sources?.[0]?.file ? { m3u8: data.sources[0].file, referer, tracks, intro, outro, allSources } : null;
   }
 
   const keys = await getMegacloudKeys();
@@ -144,7 +189,7 @@ async function _doMegacloud(
   const m3u8 = (typeof decrypted === 'string' ? decrypted : JSON.stringify(decrypted)).match(
     /"file":"(.*?)"/
   )?.[1];
-  return m3u8 ? { m3u8, referer, tracks } : null;
+  return m3u8 ? { m3u8, referer, tracks, intro, outro, allSources } : null;
 }
 
 export async function extractKiwiMapper(
@@ -232,13 +277,17 @@ export async function extractVidstream(
       timeout: 8000,
     });
 
-    const sources = data?.data?.sources ?? [];
+    const rawSources: any[] = data?.data?.sources ?? [];
     const tracks: SubtitleTrack[] = data?.data?.tracks ?? [];
-    const m3u8 = sources[0]?.url ?? null;
+    const allSources: QualitySource[] = rawSources.map((s: any) => ({
+      file: s.url || s.file || '',
+      label: s.label || s.quality || s.type || '',
+    })).filter((s: QualitySource) => s.file);
 
+    const m3u8 = allSources[0]?.file ?? null;
     if (!m3u8) return null;
 
-    return { m3u8, referer: domain2 + '/', tracks };
+    return { m3u8, referer: domain2 + '/', tracks, allSources };
   } catch (err) {
     console.error('[extractVidstream] Failed:', err instanceof Error ? err.message : err);
     return null;

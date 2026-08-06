@@ -209,7 +209,7 @@ async function fetchAllEpisodes(slug: string): Promise<AnimeEpisodes> {
     const allEpisodes: Episode[] = [];
 
     // Episodes rendered as <li> inside #w-episodes
-    $('#w-episodes ul.ep-range li a, #w-episodes a[href], #w-episodes a[data-num]').each((_, el) => {
+    $('#w-episodes ul.ep-range li a, #w-episodes a[href], #w-episodes a[data-num], .ep-item, .ep-page-item, [data-id][data-num]').each((_, el) => {
       const $el = $(el);
       const href = $el.attr('href') ?? '';
       // Sometimes it's an anchor without href but with data-num on the watch page

@@ -16,7 +16,7 @@ SplashScreenNative.preventAutoHideAsync();
 
 // ─── Bridge: injects Firebase user uid into PlayerContext so settings sync ───
 function AuthPlayerBridge() {
-  const { user }       = useAuth();
+  const { user } = useAuth();
   const { setUserUid } = usePlayer();
   useEffect(() => {
     setUserUid(user?.uid || null);
@@ -32,9 +32,11 @@ export default function App() {
 
   useEffect(() => {
     if (fontsLoaded || fontError) {
-      const timer = setTimeout(async () => {
+      // Hide the native black screen immediately to reveal our custom "K" screen underneath
+      SplashScreenNative.hideAsync();
+
+      const timer = setTimeout(() => {
         setShowSplash(false);
-        await SplashScreenNative.hideAsync();
       }, 2000);
       return () => clearTimeout(timer);
     }
@@ -45,7 +47,7 @@ export default function App() {
   }
 
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
+    <GestureHandlerRootView style={{ flex: 1, backgroundColor: '#000' }}>
       <SafeAreaProvider>
         <AuthProvider>
           <AuthModalProvider>

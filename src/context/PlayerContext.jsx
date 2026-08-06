@@ -52,7 +52,7 @@ export function PlayerProvider({ children }) {
       const updated = { ...prev, ...newPrefs };
       savePlayerPrefs(updated); // local AsyncStorage
       if (userUidRef.current) {
-        saveSettingsToCloud(userUidRef.current, updated).catch(() => {}); // cloud
+        saveSettingsToCloud(userUidRef.current, updated).catch(() => { }); // cloud
       }
       return updated;
     });

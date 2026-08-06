@@ -148,138 +148,143 @@ export default function EditProfileModal({ visible, onClose }) {
     >
       <BlurView tint="dark" intensity={60} experimentalBlurMethod="dimezisBlurView" style={StyleSheet.absoluteFill} />
       <View style={S.overlay}>
-        <View style={S.titleRow}>
-          <Text style={S.title}>Edit Profile</Text>
-          <TouchableOpacity style={S.closeBtn} onPress={onClose}>
-            <Ionicons name="close" size={20} color="#6b7280" />
-          </TouchableOpacity>
-        </View>
-
-        <ScrollView
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-          bounces={false}
+        <KeyboardAvoidingView
+          behavior="padding"
+          style={S.sheet}
         >
+          <View style={S.titleRow}>
+            <Text style={S.title}>Edit Profile</Text>
+            <TouchableOpacity style={S.closeBtn} onPress={onClose}>
+              <Ionicons name="close" size={20} color="#6b7280" />
+            </TouchableOpacity>
+          </View>
 
-          {/* ── Avatar picker ───────────────────────────────────────── */}
-          <View style={S.avatarSection}>
-            <TouchableOpacity style={S.avatarWrap} onPress={handlePickerOptions} activeOpacity={0.8}>
-              {currentPhotoURL ? (
-                <Image source={{ uri: currentPhotoURL }} style={S.avatarImg} />
-              ) : (
-                <View style={S.avatarPlaceholder}>
-                  <Text style={S.avatarInitial}>{initials}</Text>
-                </View>
-              )}
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            bounces={false}
+          >
 
-              {/* Camera badge overlay */}
-              <LinearGradient
-                colors={['transparent', 'rgba(0,0,0,0.65)']}
-                style={S.avatarOverlay}
-              >
-                <Ionicons name="camera" size={22} color="#fff" />
+            {/* ── Avatar picker ───────────────────────────────────────── */}
+            <View style={S.avatarSection}>
+              <TouchableOpacity style={S.avatarWrap} onPress={handlePickerOptions} activeOpacity={0.8}>
+                {currentPhotoURL ? (
+                  <Image source={{ uri: currentPhotoURL }} style={S.avatarImg} />
+                ) : (
+                  <View style={S.avatarPlaceholder}>
+                    <Text style={S.avatarInitial}>{initials}</Text>
+                  </View>
+                )}
+
+                {/* Camera badge overlay */}
+                <LinearGradient
+                  colors={['transparent', 'rgba(0,0,0,0.65)']}
+                  style={S.avatarOverlay}
+                >
+                  <Ionicons name="camera" size={22} color="#fff" />
+                </LinearGradient>
+              </TouchableOpacity>
+
+              <Text style={S.avatarHint}>Tap to change • Square image (512×512 recommended)</Text>
+
+              {/* Quick action buttons */}
+              <View style={S.pickerBtns}>
+                <TouchableOpacity style={S.pickerBtn} onPress={handlePickImage}>
+                  <Ionicons name="images-outline" size={18} color="#a78bfa" />
+                  <Text style={S.pickerBtnText}>Gallery</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={S.pickerBtn} onPress={handleCamera}>
+                  <Ionicons name="camera-outline" size={18} color="#a78bfa" />
+                  <Text style={S.pickerBtnText}>Camera</Text>
+                </TouchableOpacity>
+                {(avatarUri || user?.photoURL) && (
+                  <TouchableOpacity
+                    style={[S.pickerBtn, { borderColor: '#7f1d1d' }]}
+                    onPress={() => {
+                      if (avatarUri) {
+                        setAvatarUri(null); // revert local pick
+                      } else {
+                        Alert.alert('Remove Photo', 'Remove your profile photo?', [
+                          { text: 'Cancel', style: 'cancel' },
+                          {
+                            text: 'Remove', style: 'destructive', onPress: async () => {
+                              await updateUserProfile({ photoURL: '' });
+                            }
+                          },
+                        ]);
+                      }
+                    }}
+                  >
+                    <Ionicons name="trash-outline" size={18} color="#ef4444" />
+                    <Text style={[S.pickerBtnText, { color: '#ef4444' }]}>Remove</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
+
+            {/* ── Name input ──────────────────────────────────────────── */}
+            <View style={S.fieldSection}>
+              <Text style={S.fieldLabel}>Display Name</Text>
+              <View style={S.fieldWrap}>
+                <Ionicons name="person-outline" size={17} color="#4b5563" style={{ marginRight: 10 }} />
+                <TextInput
+                  style={S.fieldInput}
+                  value={name}
+                  onChangeText={setName}
+                  placeholder="Enter your display name"
+                  placeholderTextColor="#374151"
+                  autoCapitalize="words"
+                  maxLength={32}
+                />
+              </View>
+
+              <Text style={S.fieldLabel}>Email</Text>
+              <View style={[S.fieldWrap, { opacity: 0.5 }]}>
+                <Ionicons name="mail-outline" size={17} color="#4b5563" style={{ marginRight: 10 }} />
+                <TextInput
+                  style={S.fieldInput}
+                  value={user?.email || ''}
+                  editable={false}
+                  placeholderTextColor="#374151"
+                />
+                <Ionicons name="lock-closed-outline" size={14} color="#4b5563" />
+              </View>
+              <Text style={S.fieldHint}>Email cannot be changed</Text>
+            </View>
+
+            {/* ── Error ───────────────────────────────────────────────── */}
+            {!!error && (
+              <View style={S.errRow}>
+                <Ionicons name="alert-circle-outline" size={14} color="#f87171" />
+                <Text style={S.errText}>{error}</Text>
+              </View>
+            )}
+
+            {/* ── Save button ─────────────────────────────────────────── */}
+            <TouchableOpacity style={S.saveWrap} onPress={handleSave} activeOpacity={0.88} disabled={saving}>
+              <LinearGradient colors={['#7c3aed', '#5b21b6']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={S.saveGrad}>
+                {saving ? (
+                  <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
+                    <ActivityIndicator color="#fff" size="small" />
+                    <Text style={S.saveText}>{uploading ? 'Uploading photo…' : 'Saving…'}</Text>
+                  </View>
+                ) : (
+                  <Text style={S.saveText}>Save Changes</Text>
+                )}
               </LinearGradient>
             </TouchableOpacity>
 
-            <Text style={S.avatarHint}>Tap to change • Square image (512×512 recommended)</Text>
-
-            {/* Quick action buttons */}
-            <View style={S.pickerBtns}>
-              <TouchableOpacity style={S.pickerBtn} onPress={handlePickImage}>
-                <Ionicons name="images-outline" size={18} color="#a78bfa" />
-                <Text style={S.pickerBtnText}>Gallery</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={S.pickerBtn} onPress={handleCamera}>
-                <Ionicons name="camera-outline" size={18} color="#a78bfa" />
-                <Text style={S.pickerBtnText}>Camera</Text>
-              </TouchableOpacity>
-              {(avatarUri || user?.photoURL) && (
-                <TouchableOpacity
-                  style={[S.pickerBtn, { borderColor: '#7f1d1d' }]}
-                  onPress={() => {
-                    if (avatarUri) {
-                      setAvatarUri(null); // revert local pick
-                    } else {
-                      Alert.alert('Remove Photo', 'Remove your profile photo?', [
-                        { text: 'Cancel', style: 'cancel' },
-                        {
-                          text: 'Remove', style: 'destructive', onPress: async () => {
-                            await updateUserProfile({ photoURL: '' });
-                          }
-                        },
-                      ]);
-                    }
-                  }}
-                >
-                  <Ionicons name="trash-outline" size={18} color="#ef4444" />
-                  <Text style={[S.pickerBtnText, { color: '#ef4444' }]}>Remove</Text>
-                </TouchableOpacity>
-              )}
-            </View>
-          </View>
-
-          {/* ── Name input ──────────────────────────────────────────── */}
-          <View style={S.fieldSection}>
-            <Text style={S.fieldLabel}>Display Name</Text>
-            <View style={S.fieldWrap}>
-              <Ionicons name="person-outline" size={17} color="#4b5563" style={{ marginRight: 10 }} />
-              <TextInput
-                style={S.fieldInput}
-                value={name}
-                onChangeText={setName}
-                placeholder="Enter your display name"
-                placeholderTextColor="#374151"
-                autoCapitalize="words"
-                maxLength={32}
-              />
-            </View>
-
-            <Text style={S.fieldLabel}>Email</Text>
-            <View style={[S.fieldWrap, { opacity: 0.5 }]}>
-              <Ionicons name="mail-outline" size={17} color="#4b5563" style={{ marginRight: 10 }} />
-              <TextInput
-                style={S.fieldInput}
-                value={user?.email || ''}
-                editable={false}
-                placeholderTextColor="#374151"
-              />
-              <Ionicons name="lock-closed-outline" size={14} color="#4b5563" />
-            </View>
-            <Text style={S.fieldHint}>Email cannot be changed</Text>
-          </View>
-
-          {/* ── Error ───────────────────────────────────────────────── */}
-          {!!error && (
-            <View style={S.errRow}>
-              <Ionicons name="alert-circle-outline" size={14} color="#f87171" />
-              <Text style={S.errText}>{error}</Text>
-            </View>
-          )}
-
-          {/* ── Save button ─────────────────────────────────────────── */}
-          <TouchableOpacity style={S.saveWrap} onPress={handleSave} activeOpacity={0.88} disabled={saving}>
-            <LinearGradient colors={['#7c3aed', '#5b21b6']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={S.saveGrad}>
-              {saving ? (
-                <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
-                  <ActivityIndicator color="#fff" size="small" />
-                  <Text style={S.saveText}>{uploading ? 'Uploading photo…' : 'Saving…'}</Text>
-                </View>
-              ) : (
-                <Text style={S.saveText}>Save Changes</Text>
-              )}
-            </LinearGradient>
-          </TouchableOpacity>
-
-        </ScrollView>
+          </ScrollView>
+        </KeyboardAvoidingView>
       </View>
     </Modal>
   );
 }
 
 const S = StyleSheet.create({
-  overlay: { flex: 1, justifyContent: 'flex-end', backgroundColor: 'rgba(0,0,0,0.5)' },
-  sheet: { backgroundColor: '#0e0e0e', borderTopLeftRadius: 28, borderTopRightRadius: 28, borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)', paddingHorizontal: 24, paddingBottom: 40, maxHeight: '92%' },
-  handle: { width: 40, height: 4, backgroundColor: '#2a2a2a', borderRadius: 2, alignSelf: 'center', marginTop: 12, marginBottom: 4 },
+  overlay: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.5)', padding: 16 },
+  sheet: { width: '100%', maxWidth: 450, backgroundColor: '#0e0e0e', borderRadius: 28, borderWidth: 1, borderColor: 'rgba(255,255,255,0.07)', paddingHorizontal: 24, paddingBottom: 30, maxHeight: '92%' },
+  handle: { width: 40, height: 4, backgroundColor: '#2a2a2a', borderRadius: 2, alignSelf: 'center', marginTop: 12, marginBottom: 4, display: 'none' },
   titleRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingVertical: 16 },
   title: { color: '#fff', fontSize: 20, fontWeight: '800' },
   closeBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.06)', alignItems: 'center', justifyContent: 'center' },

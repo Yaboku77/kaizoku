@@ -50,9 +50,15 @@ export default function MyListScreen({ navigation }) {
     if (activeTab === 'On hold' && item.status === 'On hold') return true;
     return item.status === activeTab;
   }).sort((a, b) => {
+    // Normalize Firestore timestamps (if they exist) to milliseconds
+    const aSavedAt = a.savedAt?.seconds ? a.savedAt.seconds * 1000 : (a.savedAt || 0);
+    const bSavedAt = b.savedAt?.seconds ? b.savedAt.seconds * 1000 : (b.savedAt || 0);
+    const aAddedAt = a.addedAt?.seconds ? a.addedAt.seconds * 1000 : (a.addedAt || aSavedAt || 0);
+    const bAddedAt = b.addedAt?.seconds ? b.addedAt.seconds * 1000 : (b.addedAt || bSavedAt || 0);
+
     let diff = 0;
-    if (sortBy === 'Last Edited') diff = (b.savedAt || 0) - (a.savedAt || 0);
-    else if (sortBy === 'Last Added') diff = (b.addedAt || b.savedAt || 0) - (a.addedAt || a.savedAt || 0);
+    if (sortBy === 'Last Edited') diff = bSavedAt - aSavedAt;
+    else if (sortBy === 'Last Added') diff = bAddedAt - aAddedAt;
     else if (sortBy === 'Title') diff = (a.animeTitle || '').localeCompare(b.animeTitle || '');
     else if (sortBy === 'My Score') diff = (b.score || 0) - (a.score || 0);
     return sortOrder === 'asc' ? -diff : diff;

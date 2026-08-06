@@ -21,6 +21,7 @@
     "cheerio-without-node-native": "^0.20.2",
     "expo": "~51.0.28",
     "expo-av": "~14.0.7",
+    "expo-pip": "^1.0.0",
     "expo-blur": "~13.0.2",
     "expo-font": "~12.0.10",
     "expo-image-picker": "^15.0.7",

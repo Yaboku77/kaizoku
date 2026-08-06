@@ -27,9 +27,9 @@ export const SCREENSHOT_FALLBACK_DATA = {
 };
 
 export const FALLBACK_COMMENTS = [
-  { id: 1, anime: "Attack on Titan", likes: 142, replies: 23, text: "The ending hit different. I wasn't ready for this.", user: "LordFred", time: "2h ago", avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=LordFred&backgroundColor=b6e3f4" },
-  { id: 2, anime: "Jujutsu Kaisen", likes: 98, replies: 11, text: "Gojo's fight was absolutely insane. Studio MAPPA cooked.", user: "AniWatcher99", time: "4h ago", avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=AniWatcher99&backgroundColor=c0aede" },
-  { id: 3, anime: "Frieren", likes: 204, replies: 37, text: "This anime redefined what fantasy could be. A masterpiece.", user: "SilentOtaku", time: "1d ago", avatar: "https://api.dicebear.com/7.x/avataaars/svg?seed=SilentOtaku&backgroundColor=d1d4f9" },
+  { id: 1, anime: "Attack on Titan", likes: 142, replies: 23, text: "The ending hit different. I wasn't ready for this.", user: "LordFred", time: "2h ago", avatar: "https://api.dicebear.com/7.x/avataaars/png?seed=LordFred&backgroundColor=b6e3f4" },
+  { id: 2, anime: "Jujutsu Kaisen", likes: 98, replies: 11, text: "Gojo's fight was absolutely insane. Studio MAPPA cooked.", user: "AniWatcher99", time: "4h ago", avatar: "https://api.dicebear.com/7.x/avataaars/png?seed=AniWatcher99&backgroundColor=c0aede" },
+  { id: 3, anime: "Frieren", likes: 204, replies: 37, text: "This anime redefined what fantasy could be. A masterpiece.", user: "SilentOtaku", time: "1d ago", avatar: "https://api.dicebear.com/7.x/avataaars/png?seed=SilentOtaku&backgroundColor=d1d4f9" },
 ];
 
 export const FALLBACK_DETAILS = {

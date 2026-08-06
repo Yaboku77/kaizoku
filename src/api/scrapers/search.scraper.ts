@@ -55,7 +55,7 @@ function parseAnimeGrid($: cheerio.CheerioAPI, selector: string): AnimeCard[] {
 
 export async function scrapeSearch(keyword: string): Promise<SearchResult> {
   const $ = await fetchPage(`/filter?keyword=${encodeURIComponent(keyword)}`);
-  const results = parseAnimeGrid($, '.items.flw-wrap .film_list-wrap .flw-item, .film_list-wrap .flw-item, .ani.items .item, section .items .item');
+  const results = parseAnimeGrid($, '.items.flw-wrap .film_list-wrap .flw-item, .film_list-wrap .flw-item, .ani.items .item, section .items .item, .flw-item, .item, .anime-card, [data-id]');
   return { results, keyword };
 }
 

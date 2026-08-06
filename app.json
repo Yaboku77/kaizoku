@@ -19,6 +19,10 @@
         "foregroundImage": "./kaizoku.png",
         "backgroundColor": "#000000"
       },
+      "backgroundColor": "#000000",
+      "navigationBar": {
+        "backgroundColor": "#000000"
+      },
       "package": "com.kaizoku.stream",
       "versionCode": 1
     },
@@ -28,7 +32,8 @@
         {
           "microphonePermission": false
         }
-      ]
+      ],
+      "expo-pip"
     ]
   }
 }

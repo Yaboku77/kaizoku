@@ -4,6 +4,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
 import { getHistory, clearHistory } from '../data/constants';
+import { useAuth } from '../context/AuthContext';
+import { getHistoryFromCloud, clearHistoryFromCloud } from '../api/firestore';
 
 function HistoryCard({ item, onPress }) {
   const pct = item.duration > 0 ? Math.min(100, Math.round((item.progress / item.duration) * 100)) : 0;
@@ -24,14 +26,29 @@ function HistoryCard({ item, onPress }) {
 
 export default function HistoryScreen({ navigation }) {
   const [history, setHistory] = useState([]);
+  const { user } = useAuth();
 
   useFocusEffect(useCallback(() => {
-    getHistory().then(setHistory);
-  }, []));
+    if (user) {
+      getHistoryFromCloud(user.uid)
+        .then(cloud => {
+          if (cloud.length > 0) setHistory(cloud);
+          else getHistory().then(setHistory);
+        })
+        .catch(() => getHistory().then(setHistory));
+    } else {
+      getHistory().then(setHistory);
+    }
+  }, [user]));
 
   const handleClearHistory = () => Alert.alert('Clear History', 'Remove all watch history?', [
     { text: 'Cancel', style: 'cancel' },
-    { text: 'Clear All', style: 'destructive', onPress: async () => { await clearHistory(); setHistory([]); } },
+    { text: 'Clear All', style: 'destructive', onPress: async () => { 
+        await clearHistory(); 
+        if (user) await clearHistoryFromCloud(user.uid);
+        setHistory([]); 
+      } 
+    },
   ]);
 
   return (

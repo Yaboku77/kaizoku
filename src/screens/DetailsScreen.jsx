@@ -10,6 +10,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { AnimatedShimmer } from '../components/SharedComponents';
 import { DETAILS_QUERY } from '../data/queries';
 import { TMDB_API_KEY, getList, saveToList, removeFromList } from '../data/constants';
+import { FALLBACK_DETAILS } from '../data/mockData';
 import { usePlayer } from '../context/PlayerContext';
 import { useAuth } from '../context/AuthContext';
 import { useAuthModal } from '../context/AuthModalContext';
@@ -44,8 +45,8 @@ function Chip({ label, color = '#0e7490', bg = 'rgba(6,182,212,0.15)' }) {
 
 export default function DetailsScreen({ route, navigation }) {
   const insets = useSafeAreaInsets();
-  const { play }  = usePlayer();
-  const { user }  = useAuth();
+  const { play } = usePlayer();
+  const { user } = useAuth();
   const { openAuthModal } = useAuthModal();
   const { animeId } = route.params;
   const [loading, setLoading] = useState(true);
@@ -58,10 +59,10 @@ export default function DetailsScreen({ route, navigation }) {
   const [savedStatus, setSavedStatus] = useState(null);
   const [isSaveMenuOpen, setIsSaveMenuOpen] = useState(false);
   // Reactions
-  const [likes,        setLikes]        = useState(0);
-  const [dislikes,     setDislikes]     = useState(0);
+  const [likes, setLikes] = useState(0);
+  const [dislikes, setDislikes] = useState(0);
   const [userReaction, setUserReaction] = useState(null); // 'like' | 'dislike' | null
-  const [reacting,     setReacting]     = useState(false);
+  const [reacting, setReacting] = useState(false);
 
   useFocusEffect(useCallback(() => {
     getList().then(list => {
@@ -80,7 +81,7 @@ export default function DetailsScreen({ route, navigation }) {
     if (!data) return;
     if (status === 'Remove') {
       await removeFromList(animeId);
-      if (user?.uid) removeFromListCloud(user.uid, animeId).catch(() => {});
+      if (user?.uid) removeFromListCloud(user.uid, animeId).catch(() => { });
       setSavedStatus(null);
     } else {
       const listEntry = {
@@ -93,7 +94,7 @@ export default function DetailsScreen({ route, navigation }) {
         score: data.averageScore,
       };
       await saveToList(listEntry);
-      if (user?.uid) saveListToCloud(user.uid, listEntry).catch(() => {});
+      if (user?.uid) saveListToCloud(user.uid, listEntry).catch(() => { });
       setSavedStatus(status);
     }
     setIsSaveMenuOpen(false);
@@ -178,7 +179,10 @@ export default function DetailsScreen({ route, navigation }) {
     try {
       const res = await fetch('https://graphql.anilist.co', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
         body: JSON.stringify({ query: DETAILS_QUERY, variables: { id: parseInt(animeId) } }),
       });
       const json = await res.json();
@@ -186,11 +190,12 @@ export default function DetailsScreen({ route, navigation }) {
         const m = json.data.Media;
         const processed = {
           id: m.id,
-          title: m.title.english || m.title.romaji,
-          nativeTitle: m.title.native,
+          idMal: m.idMal,
+          title: m.title?.english || m.title?.romaji || 'Unknown',
+          nativeTitle: m.title?.native || '',
           synonyms: m.synonyms || [],
-          bannerImage: m.bannerImage,
-          coverImage: m.coverImage.extraLarge,
+          bannerImage: m.bannerImage || '',
+          coverImage: m.coverImage?.extraLarge || '',
           status: m.status,
           format: formatType(m.format),
           season: m.season,
@@ -223,21 +228,21 @@ export default function DetailsScreen({ route, navigation }) {
             ?.filter(e => e.node.format && ['TV', 'TV_SHORT', 'OVA', 'ONA', 'MOVIE', 'SPECIAL'].includes(e.node.format))
             ?.map(e => ({
               relationType: e.relationType?.replace(/_/g, ' ') || 'OTHER',
-              id: e.node.id,
-              title: e.node.title.english || e.node.title.romaji,
-              coverImage: e.node.coverImage.large,
-              format: formatType(e.node.format),
-              year: e.node.seasonYear || '?',
+              id: e.node?.id,
+              title: e.node?.title?.english || e.node?.title?.romaji || 'Unknown',
+              coverImage: e.node?.coverImage?.large || '',
+              format: formatType(e.node?.format),
+              year: e.node?.seasonYear || '?',
             })) || [],
           recommendations: m.recommendations?.nodes
             ?.filter(n => n.mediaRecommendation)
             ?.map(n => ({
-              id: n.mediaRecommendation.id,
-              title: n.mediaRecommendation.title.english || n.mediaRecommendation.title.romaji,
-              coverImage: n.mediaRecommendation.coverImage.large,
-              format: formatType(n.mediaRecommendation.format),
-              season: n.mediaRecommendation.season || '',
-              year: n.mediaRecommendation.seasonYear || '',
+              id: n.mediaRecommendation?.id,
+              title: n.mediaRecommendation?.title?.english || n.mediaRecommendation?.title?.romaji || 'Unknown',
+              coverImage: n.mediaRecommendation?.coverImage?.large || '',
+              format: formatType(n.mediaRecommendation?.format),
+              season: n.mediaRecommendation?.season || '',
+              year: n.mediaRecommendation?.seasonYear || '',
             })) || [],
           episodeCount: m.episodes,
           nextAiringEpisode: m.nextAiringEpisode?.episode,
@@ -378,9 +383,24 @@ export default function DetailsScreen({ route, navigation }) {
 
   const getMalLink = (links) => links?.find(l => l.site === 'MyAnimeList')?.url || null;
 
-  const goToPlayer = (epIdx = 0) => {
+  const goToPlayer = async (epIdx = 0, resume = false) => {
+    let targetIdx = epIdx;
+    if (resume) {
+      try {
+        const { getHistory } = require('../data/constants');
+        const h = await getHistory();
+        const existing = h.find(x => String(x.animeId) === String(data.id));
+        if (existing) {
+          targetIdx = existing.episodeIndex;
+        }
+      } catch (e) {
+        console.log('Failed to resume history', e);
+      }
+    }
+
     play({
       animeId: data.id,
+      idMal: data.idMal,
       animeTitle: data.title,
       coverImage: data.coverImage,
       nativeTitle: data.nativeTitle,
@@ -388,7 +408,7 @@ export default function DetailsScreen({ route, navigation }) {
       description: data.description,
       genres: data.genres,
       episodes,
-      episodeIndex: epIdx,
+      episodeIndex: targetIdx,
       trailer: data.trailer,
       relations: data.relations,
       recommendations: data.recommendations,
@@ -476,7 +496,7 @@ export default function DetailsScreen({ route, navigation }) {
           <View style={S.actionRow}>
             <TouchableOpacity
               style={[S.watchNowBtn, isFetchingEpisodes && { opacity: 0.5 }]}
-              onPress={() => { if (!isFetchingEpisodes && episodes.length > 0) goToPlayer(0); }}
+              onPress={() => { if (!isFetchingEpisodes && episodes.length > 0) goToPlayer(0, true); }}
               activeOpacity={0.8}
             >
               <Ionicons name="play" size={16} color="#000" />
@@ -970,11 +990,11 @@ const S = StyleSheet.create({
     backgroundColor: '#151515', borderRadius: 22,
     borderWidth: 1, borderColor: '#2a2a2a',
   },
-  reactionBtnActive:   { backgroundColor: 'rgba(34,197,94,0.10)',  borderColor: 'rgba(34,197,94,0.35)' },
-  reactionBtnDisactive:{ backgroundColor: 'rgba(239,68,68,0.10)',  borderColor: 'rgba(239,68,68,0.35)' },
+  reactionBtnActive: { backgroundColor: 'rgba(34,197,94,0.10)', borderColor: 'rgba(34,197,94,0.35)' },
+  reactionBtnDisactive: { backgroundColor: 'rgba(239,68,68,0.10)', borderColor: 'rgba(239,68,68,0.35)' },
   reactionCount: { color: '#6b7280', fontSize: 12, fontWeight: '700' },
   // Comments preview row
-  commentPreviewRow:  { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#111', borderRadius: 14, paddingHorizontal: 16, paddingVertical: 14, marginBottom: 20, borderWidth: 1, borderColor: '#1a1a1a' },
-  commentPreviewLabel:{ color: '#d1d5db', fontSize: 15, fontWeight: '700' },
-  commentPreviewCount:{ color: '#6b7280', fontSize: 13, fontWeight: '600' },
+  commentPreviewRow: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#111', borderRadius: 14, paddingHorizontal: 16, paddingVertical: 14, marginBottom: 20, borderWidth: 1, borderColor: '#1a1a1a' },
+  commentPreviewLabel: { color: '#d1d5db', fontSize: 15, fontWeight: '700' },
+  commentPreviewCount: { color: '#6b7280', fontSize: 13, fontWeight: '600' },
 });

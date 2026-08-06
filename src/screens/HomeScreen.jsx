@@ -202,7 +202,10 @@ export default function HomeScreen({ navigation, route }) {
     try {
       const res = await fetch('https://graphql.anilist.co', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
         body: JSON.stringify({ query: HOME_QUERY, variables: { page: pageNum } }),
       });
       const json = await res.json();
@@ -212,23 +215,23 @@ export default function HomeScreen({ navigation, route }) {
         const heroRaw = d.trending?.media?.slice(0, 10) || [];
         const heroItemsRaw = heroRaw.map(m => ({
           id: m.id,
-          title: m.title.english || m.title.romaji,
-          image: m.coverImage.extraLarge || m.bannerImage,
+          title: m.title?.english || m.title?.romaji || 'Unknown',
+          image: m.coverImage?.extraLarge || m.bannerImage || '',
           type: m.format === 'TV' ? 'TV Show' : (m.format || 'TV Show'),
           status: m.status === 'RELEASING' ? 'AIRING' : (m.status || ''),
           year: String(m.seasonYear || ''),
         }));
 
         const trending = d.trending?.media?.map(m => ({
-          id: m.id, title: m.title.english || m.title.romaji,
-          image: m.coverImage.extraLarge,
+          id: m.id, title: m.title?.english || m.title?.romaji || 'Unknown',
+          image: m.coverImage?.extraLarge || '',
           type: m.format === 'TV' ? 'TV Show' : (m.format || 'TV'),
           year: m.seasonYear, status: m.status,
         })) || SCREENSHOT_FALLBACK_DATA.trending;
 
         const popular = d.popular?.media?.map(m => ({
-          id: m.id, title: m.title.english || m.title.romaji,
-          image: m.coverImage.extraLarge,
+          id: m.id, title: m.title?.english || m.title?.romaji || 'Unknown',
+          image: m.coverImage?.extraLarge || '',
           type: m.format === 'TV' ? 'TV Show' : (m.format || 'TV'),
           year: m.seasonYear, status: m.status,
         })) || SCREENSHOT_FALLBACK_DATA.popular;
@@ -236,8 +239,8 @@ export default function HomeScreen({ navigation, route }) {
         const upRaw = d.upcoming?.media?.[0];
         const upcoming = upRaw ? {
           id: upRaw.id,
-          title: upRaw.title.english || upRaw.title.romaji,
-          image: upRaw.coverImage.extraLarge,
+          title: upRaw.title?.english || upRaw.title?.romaji || 'Unknown',
+          image: upRaw.coverImage?.extraLarge || '',
           ep1Airing: upRaw.nextAiringEpisode
             ? (() => { const s = upRaw.nextAiringEpisode.timeUntilAiring; const day = Math.floor(s / 86400); const h = Math.floor((s % 86400) / 3600); return day > 0 ? `${day}d ${h}h` : `${h}h`; })()
             : 'Coming Soon',
@@ -262,14 +265,45 @@ export default function HomeScreen({ navigation, route }) {
           const epNum = m.nextAiringEpisode ? Math.max(1, m.nextAiringEpisode.episode - 1) : 'Latest';
           return {
             id: m.id,
-            title: m.title.english || m.title.romaji,
-            image: m.coverImage.extraLarge,
-            avatar: m.coverImage.medium,
+            title: m.title?.english || m.title?.romaji || 'Unknown',
+            image: m.coverImage?.extraLarge || '',
+            avatar: m.coverImage?.medium || '',
             ep: `Episode ${epNum}`,
             epIndex: typeof epNum === 'number' ? Math.max(0, epNum - 1) : 0,
             time: formatTimeAgo(m.updatedAt),
           };
         }) || [];
+
+        let recentComments = [];
+        try {
+          const commentRes = await fetch('https://graphql.anilist.co', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Accept': 'application/json'
+            },
+            body: JSON.stringify({
+              query: `query { Page(page: 1, perPage: 3) { threadComments(sort: ID_DESC) { id comment(asHtml: true) createdAt user { name avatar { medium } } thread { title mediaCategories { title { romaji english } } } } } }`
+            })
+          });
+          const commentJson = await commentRes.json();
+          if (commentJson.data?.Page?.threadComments) {
+            recentComments = commentJson.data.Page.threadComments.map(c => ({
+              id: String(c.id),
+              anime: c.thread?.mediaCategories?.[0]?.title?.english || c.thread?.mediaCategories?.[0]?.title?.romaji || c.thread?.title || 'Unknown',
+              user: c.user?.name || 'Anonymous',
+              avatar: c.user?.avatar?.medium,
+              time: formatTimeAgo(c.createdAt),
+              text: c.comment?.replace(/<[^>]*>?/gm, '').trim() || '',
+              likes: 0,
+              replies: 0,
+            }));
+          } else if (commentJson.errors) {
+            console.log("AniList Comments API Error:", commentJson.errors);
+          }
+        } catch (err) {
+          console.log("Failed to fetch comments separately", err);
+        }
 
         // Fetch TMDB logos — exact match of React app logic (no extra query filters)
         const heroWithLogos = await Promise.all(
@@ -319,7 +353,7 @@ export default function HomeScreen({ navigation, route }) {
         const filteredHeroes = heroWithLogos.filter(Boolean);
         const finalHeroes = filteredHeroes.length > 0 ? filteredHeroes : heroItemsRaw;
 
-        const newData = { heroItems: finalHeroes, trending, popular, upcoming };
+        const newData = { heroItems: finalHeroes, trending, popular, upcoming, recentComments };
         setData(newData);
         startHeroTimer(finalHeroes);
         if (reset) {
@@ -328,9 +362,15 @@ export default function HomeScreen({ navigation, route }) {
         } else {
           setRecentReleases(prev => [...prev, ...releases]);
         }
+      } else {
+        // Rate limited or API returned errors
+        console.log("AniList API returned no data:", json.errors);
+        setData(SCREENSHOT_FALLBACK_DATA);
+        startHeroTimer(SCREENSHOT_FALLBACK_DATA.heroItems);
       }
     } catch (e) {
       console.log('Home fetch error:', e);
+      setData(SCREENSHOT_FALLBACK_DATA);
       startHeroTimer(SCREENSHOT_FALLBACK_DATA.heroItems);
     } finally {
       setLoading(false);
@@ -379,7 +419,7 @@ export default function HomeScreen({ navigation, route }) {
       <ScrollView
         showsVerticalScrollIndicator={false}
         style={{ flex: 1 }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#fff" />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#fff" colors={['#4285F4', '#DB4437', '#F4B400', '#0F9D58']} />}
         onMomentumScrollEnd={onEndReached}
         scrollEventThrottle={400}
       >
@@ -506,7 +546,7 @@ export default function HomeScreen({ navigation, route }) {
             <Text style={styles.sectionTitle}>Recent Comments</Text>
           </View>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.hScroll} contentContainerStyle={styles.hScrollContent}>
-            {FALLBACK_COMMENTS.map(c => <CommentCard key={c.id} comment={c} />)}
+            {(data.recentComments?.length > 0 ? data.recentComments : FALLBACK_COMMENTS).map(c => <CommentCard key={c.id} comment={c} />)}
           </ScrollView>
         </View>
 

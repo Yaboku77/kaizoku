@@ -7,7 +7,7 @@ import { getHistory, clearHistory, getList } from '../data/constants';
 import { usePlayer } from '../context/PlayerContext';
 import { useAuth } from '../context/AuthContext';
 import { useAuthModal } from '../context/AuthModalContext';
-import { clearHistoryFromCloud, getHistoryFromCloud } from '../api/firestore';
+import { clearHistoryFromCloud, getHistoryFromCloud, getListFromCloud } from '../api/firestore';
 import EditProfileModal from './EditProfileModal';
 
 // ─── History card ─────────────────────────────────────────────────────────────
@@ -100,10 +100,17 @@ export default function YouScreen({ navigation }) {
           else getHistory().then(setHistory);
         })
         .catch(() => getHistory().then(setHistory));
+        
+      getListFromCloud(user.uid)
+        .then(cloud => {
+          if (cloud.length > 0) setWatchlist(cloud);
+          else getList().then(setWatchlist);
+        })
+        .catch(() => getList().then(setWatchlist));
     } else {
       getHistory().then(setHistory);
+      getList().then(setWatchlist);
     }
-    getList().then(setWatchlist);
   }, [user]));
 
   const handleClearHistory = () => Alert.alert('Clear History', 'Remove all watch history?', [
