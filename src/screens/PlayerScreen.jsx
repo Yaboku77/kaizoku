@@ -45,9 +45,9 @@ const TMDB_KEY = TMDB_API_KEY || '3dfa4bae246f35044e56a6dcd3294e3f';
 const EPISODES_PER_PAGE = 25;
 // Preferred server order (from API: VidPlay-1, HD-1, Vidstream-2, VidCloud-1)
 // Server preference order — names must match what anikoto returns in the AJAX server list
-const PREFERRED_SERVERS = ['MegaPlay', 'VidPlay', 'HD-1', 'Vidstream', 'VidCloud', 'Kiwi Stream'];
+const PREFERRED_SERVERS = ['VidPlay', 'MegaPlay', 'HD-1', 'Vidstream', 'VidCloud', 'Kiwi Stream'];
 // Also check these substrings to match partial server names (case-insensitive)
-const PREFERRED_SERVER_PATTERNS = ['megaplay', 'vidplay', 'hd-1', 'vidstream', 'vidcloud', 'kiwi'];
+const PREFERRED_SERVER_PATTERNS = ['vidplay', 'megaplay', 'hd-1', 'vidstream', 'vidcloud', 'kiwi'];
 
 // ─── Episode Card (matches web EpisodeCard) ──────────────────────────────────
 function EpisodeCard({ ep, isActive, coverImage, onPress }) {
@@ -191,14 +191,33 @@ function PlayerScreenInner() {
   const [skipTarget, setSkipTarget] = useState(0);
   const [skipText, setSkipText] = useState("");
   const [isControlsVisible, setIsControlsVisible] = useState(true);
+  const controlsOpacity = useRef(new Animated.Value(1)).current;
+
+  const [availableSubtitles, setAvailableSubtitles] = useState([]);
+  const [selectedSubtitleLabel, setSelectedSubtitleLabel] = useState('English');
+  const selectedSubtitleRef = useRef('English');
+
+  const [introData, setIntroData] = useState(null);
+  const [outroData, setOutroData] = useState(null);
+
+  useEffect(() => {
+    Animated.timing(controlsOpacity, {
+      toValue: isControlsVisible ? 1 : 0,
+      duration: 250,
+      useNativeDriver: true,
+    }).start();
+  }, [isControlsVisible]);
+
 
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [scrubTime, setScrubTime] = useState(0);
   const isScrubbingRef = useRef(false);
   const durationRef = useRef(0);
+  const lastSkippedTargetRef = useRef(0);
 
   // Mutable refs for PiP / AppState closures — always read current values without stale closure
   const isPlayingRef = useRef(false);
+  const isBufferingRef = useRef(false);
   const streamUrlRef = useRef(null);
   const isStreamLoadingRef = useRef(true);
   const chosenAllSourcesRef = useRef([]);
@@ -214,6 +233,8 @@ function PlayerScreenInner() {
   const skipTimeoutRef = useRef(null);
   let controlsHideTimeout = useRef(null);
 
+  const dubFailCountRef = useRef(0);
+
   // Hold-to-2x speed
   const [isHoldingSpeed, setIsHoldingSpeed] = useState(false);
   const isHoldingSpeedRef = useRef(false);
@@ -228,8 +249,8 @@ function PlayerScreenInner() {
   const showControls = () => {
     setIsControlsVisible(true);
     if (controlsHideTimeout.current) clearTimeout(controlsHideTimeout.current);
-    if (isPlaying) {
-      controlsHideTimeout.current = setTimeout(() => setIsControlsVisible(false), 3000);
+    if (isPlayingRef.current) {
+      controlsHideTimeout.current = setTimeout(() => setIsControlsVisible(false), 2500);
     }
   };
 
@@ -262,10 +283,16 @@ function PlayerScreenInner() {
   };
 
   const formatTime = (s) => {
-    if (!s || isNaN(s)) return '0:00';
-    const m = Math.floor(s / 60);
+    if (!s || isNaN(s) || s < 0) return '0:00';
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
     const x = Math.floor(s % 60);
-    return `${m}:${x < 10 ? '0' : ''}${x}`;
+    const secStr = x < 10 ? `0${x}` : `${x}`;
+    if (h > 0) {
+      const minStr = m < 10 ? `0${m}` : `${m}`;
+      return `${h}:${minStr}:${secStr}`;
+    }
+    return `${m}:${secStr}`;
   };
 
   const handleProgressiveSkip = (seconds) => {
@@ -318,6 +345,8 @@ function PlayerScreenInner() {
                 close();
               }
             } else {
+              // Ignore swipe down in fullscreen if it starts near the top edge (e.g. status bar pull)
+              if (gestureState.y0 < 50) return;
               toggleFullscreenState(false);
             }
           } else if (Math.abs(dy) > Math.abs(dx) && dy < -30) {
@@ -483,6 +512,7 @@ function PlayerScreenInner() {
         nextAppState === 'background' &&
         isActive &&
         isPlayingRef.current &&
+        !isBufferingRef.current &&
         !isStreamLoadingRef.current &&
         streamUrlRef.current &&
         Platform.OS === 'android'
@@ -548,7 +578,7 @@ function PlayerScreenInner() {
   const settingsPanResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponderCapture: (_, g) => g.dy > 5 && settingsScrollY.current <= 0,
+      onMoveShouldSetPanResponderCapture: (_, g) => g.dy > 15 && Math.abs(g.dx) < 30 && settingsScrollY.current <= 0,
       onPanResponderMove: (_, g) => {
         if (g.dy > 0) {
           settingsSlideY.setValue(g.dy);
@@ -684,9 +714,6 @@ function PlayerScreenInner() {
     isFullscreenRef.current = nextState;
     setIsFullscreen(nextState);
 
-    // Hide status bar completely in fullscreen so the video centers perfectly
-    StatusBar.setHidden(nextState, 'slide');
-
     webviewRef.current?.injectJavaScript(`
       try {
         var el1 = document.getElementById('fsexp');
@@ -740,17 +767,27 @@ function PlayerScreenInner() {
   useEffect(() => {
     // Keep refs in sync so the AppState closure never reads stale values
     isPlayingRef.current = isPlaying;
+    isBufferingRef.current = isBuffering;
     streamUrlRef.current = streamUrl;
     isStreamLoadingRef.current = isStreamLoading;
     // Tell Android to auto-enter PiP when user presses Home/Overview (Android 12+)
     if (Platform.OS === 'android') {
-      if (streamUrl && !isStreamLoading && isPlaying) {
+      if (streamUrl && !isStreamLoading && isPlaying && !isBuffering) {
         safeSetPipParams({ autoEnterEnabled: true, width: 16, height: 9 });
       } else {
         safeSetPipParams({ autoEnterEnabled: false });
       }
     }
-  }, [streamUrl, isStreamLoading, isPlaying]);
+  }, [streamUrl, isStreamLoading, isPlaying, isBuffering]);
+
+  // Clean up PiP state on unmount so the app doesn't accidentally enter PiP when the player is closed
+  useEffect(() => {
+    return () => {
+      if (Platform.OS === 'android') {
+        safeSetPipParams({ autoEnterEnabled: false });
+      }
+    };
+  }, []);
 
   const currentEp = episodes[currentEpIdx];
 
@@ -806,8 +843,12 @@ function PlayerScreenInner() {
       return true;
     }
 
+    if (isMinimized) {
+      return false; // let the underlying screen handle the back button when in miniplayer
+    }
+
     // If the video is currently playing, enter in-app miniplayer instead of closing
-    if (isPlaying && !isInPip && prefs.miniplayer) {
+    if (isPlayingRef.current && !isInPip && prefs.miniplayer) {
       LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
       minimize();
       return true;
@@ -820,7 +861,7 @@ function PlayerScreenInner() {
   useEffect(() => {
     const backHandler = BackHandler.addEventListener('hardwareBackPress', handleBackPress);
     return () => backHandler.remove();
-  }, [isActive, isSettingsOpen]);
+  }, [isActive, isSettingsOpen, isMinimized, prefs.miniplayer, isInPip]);
 
   // ── Fetch stream by scraping anikoto.net directly (no external API needed) ──
   // Flow: scrapeSearch → scrapeWatch → extractStreamUrl → m3u8 URL + referer
@@ -879,13 +920,37 @@ function PlayerScreenInner() {
         return possibleTitles.includes(rName) || possibleTitles.includes(rJname);
       });
 
-      // 2. If no strict match, fallback to fuzzy match
+      // 2. Exact match after stripping tags like (TV), (Dub), etc.
       if (!exactMatch) {
         exactMatch = results.find(r => {
+          const cleanName = (r.title || r.name || '').toLowerCase().replace(/\s*\([^)]*\)/g, '').trim();
+          const cleanJname = (r.titleJp || '').toLowerCase().replace(/\s*\([^)]*\)/g, '').trim();
+          return possibleTitles.includes(cleanName) || possibleTitles.includes(cleanJname);
+        });
+      }
+
+      // 3. If no strict match, fallback to fuzzy match picking the one closest in length
+      //    (also penalizing the word 'movie' or '0' if not in our original titles)
+      if (!exactMatch) {
+        let highestScore = -1;
+        for (const r of results) {
           const rName = (r.title || r.name || '').toLowerCase().trim();
           const rJname = (r.titleJp || '').toLowerCase().trim();
-          return possibleTitles.some(t => rName.includes(t) || t.includes(rName) || rJname.includes(t) || t.includes(rJname));
-        });
+
+          for (const t of possibleTitles) {
+            if (rName.includes(t) || t.includes(rName) || rJname.includes(t) || t.includes(rJname)) {
+              let score = 1000 - Math.min(Math.abs(rName.length - t.length), Math.abs(rJname.length - t.length));
+              // Penalize results that add "movie" or " 0 " when the target title doesn't have it
+              if (!t.includes('movie') && rName.includes('movie')) score -= 100;
+              if (!t.includes(' 0') && (rName.includes(' 0') || rName.endsWith(' 0'))) score -= 100;
+
+              if (score > highestScore) {
+                highestScore = score;
+                exactMatch = r;
+              }
+            }
+          }
+        }
       }
 
       if (exactMatch) bestMatch = exactMatch;
@@ -896,7 +961,7 @@ function PlayerScreenInner() {
       console.log(`[DEBUG] Calling scrapeWatch for slug: ${slug}, epNum: ${epNum}`);
       let hasStartedPlaying = false;
 
-      const processData = async (data) => {
+      const processData = async (data, isFinal = false) => {
         if (!data || !data.sources?.length) return;
 
         // Sort sources to prefer 'auto' quality so HLS sees all resolutions
@@ -917,8 +982,13 @@ function PlayerScreenInner() {
         const sources = validSources.length > 0 ? validSources : data.sources;
 
         const actuallyHasDub = data.episode?.hasDub || sources.some(s => s.type === 'dub');
-        let wantType = forceType || prefsRef.current.defaultType || 'sub';
-        if (wantType === 'dub' && !actuallyHasDub) wantType = 'sub';
+        const userPrefType = forceType || prefsRef.current.defaultType || 'sub';
+        let wantType = userPrefType;
+
+        if (wantType === 'dub' && !actuallyHasDub) {
+          if (!isFinal) return; // Wait for dub streams to possibly arrive
+          wantType = 'sub';
+        }
 
         const isValid = (s) => {
           if (!s.m3u8 && !s.url) return false;
@@ -951,14 +1021,32 @@ function PlayerScreenInner() {
           chosen = sources.find(s => s.type === wantType && isValid(s) && s.m3u8) || sources.find(s => s.type === wantType && isValid(s));
         }
         if (!chosen) {
+          chosen = sources.find(s => s.type === wantType && isValid(s) && s.m3u8) || sources.find(s => s.type === wantType && isValid(s));
+        }
+
+        if (!chosen) {
+          if (!isFinal) return; // Wait for our preferred type to arrive before falling back
           chosen = sources.find(s => isValid(s) && s.m3u8) || sources.find(s => isValid(s)) || null;
         }
 
         if (chosen) {
           hasStartedPlaying = true;
           const resolvedType = chosen.type === 'dub' ? 'dub' : 'sub';
-          setActiveType(resolvedType);
-          activeTypeRef.current = resolvedType;
+
+          // KEEP user's selected preference in UI
+          setActiveType(userPrefType);
+          activeTypeRef.current = userPrefType;
+
+          if (userPrefType === 'dub' && resolvedType === 'sub') {
+            dubFailCountRef.current += 1;
+            if (dubFailCountRef.current >= 3) {
+              Alert.alert('Dub Not Available', 'Dub has not been available for the last few tries. We kept your preference on Dub, but are playing Sub instead.');
+              dubFailCountRef.current = 0; // reset after notifying
+            }
+          } else if (resolvedType === 'dub') {
+            dubFailCountRef.current = 0; // reset if successful
+          }
+
           if (!currentServer || currentServer !== chosen.server) {
             autoServerChangeRef.current = true;
             setCurrentServer(chosen.server || '');
@@ -993,14 +1081,18 @@ function PlayerScreenInner() {
           chosenRefererRef.current = chosen.referer || '';
           chosenTracksRef.current = tracks;
           refererBaseRef.current = refererBase;
+
+          setIntroData(intro);
+          setOutroData(outro);
+
           console.log(`[DEBUG] Playing: server=${chosen.server} type=${chosen.type} m3u8=${streamSrc} referer=${chosen.referer} baseUrl=${refererBase}`);
-          setStreamUrl({ html: buildPlayerHTML(streamSrc, chosen.referer || '', tracks, playbackSpeed, initialTime, subtitlesEnabledRef.current, intro, outro), baseUrl: refererBase });
+          setStreamUrl({ html: buildPlayerHTML(streamSrc, chosen.referer || '', tracks, playbackSpeed, initialTime, subtitlesEnabledRef.current, intro, outro, isPlayingRef.current || prefs.autoPlay), baseUrl: refererBase });
           setIsStreamLoading(false);
         }
       };
 
       const finalData = await scrapeWatch(slug, String(epNum), processData, idMal);
-      await processData(finalData);
+      await processData(finalData, true);
 
       if (!hasStartedPlaying) {
         console.log('[DEBUG] No playable source found. All extraction failed.');
@@ -1031,12 +1123,30 @@ function PlayerScreenInner() {
   // Build the player HTML with a HLS.js custom loader that adds Referer/Origin headers.
   // This eliminates the need for any external proxy — all HLS requests are made via
   // fetch() with the correct headers injected directly in the WebView.
-  const buildPlayerHTML = (src, referer = '', tracks = [], initialSpeed = 1, initialTime = 0, initialSubtitles = true, intro = null, outro = null) => {
-    const trackTags = (tracks || [])
-      .filter(t => t.kind === 'captions' || t.kind === 'subtitles')
+  const buildPlayerHTML = (src, referer = '', tracks = [], initialSpeed = 1, initialTime = 0, initialSubtitles = true, intro = null, outro = null, initialAutoPlay = false) => {
+    const subtitleTracks = (tracks || []).filter(t => t.kind === 'captions' || t.kind === 'subtitles');
+
+    let activeSub = selectedSubtitleRef.current;
+    if (subtitleTracks.length > 0 && !subtitleTracks.find(s => s.label === activeSub)) {
+      const engSub = subtitleTracks.find(s => s.label?.toLowerCase().includes('english') || s.label?.toLowerCase().includes('eng'));
+      activeSub = engSub ? engSub.label : subtitleTracks[0].label;
+      selectedSubtitleRef.current = activeSub;
+      setTimeout(() => {
+        setAvailableSubtitles(subtitleTracks);
+        setSelectedSubtitleLabel(activeSub);
+      }, 0);
+    } else if (subtitleTracks.length > 0) {
+      setTimeout(() => setAvailableSubtitles(subtitleTracks), 0);
+    } else {
+      setTimeout(() => setAvailableSubtitles([]), 0);
+    }
+
+    const trackTags = subtitleTracks
       .map((t, i) => {
         const trackSrc = t.file || t.url || '';
-        return `<track kind="subtitles" src="${trackSrc}" label="${t.label || 'Sub'}" srclang="en" ${(i === 0 && initialSubtitles) ? 'default' : ''}>`;
+        let isDefault = t.label === activeSub;
+        if (!subtitleTracks.some(x => x.label === activeSub) && i === 0) isDefault = true;
+        return `<track kind="subtitles" src="${trackSrc}" label="${t.label || 'Sub'}" srclang="en" ${(isDefault && initialSubtitles) ? 'default' : ''}>`;
       })
       .join('');
 
@@ -1059,19 +1169,20 @@ html,body{width:100%;height:100%;background:#000;overflow:hidden;}
 var vid=document.getElementById('vid');
 var hls=null,src=${JSON.stringify(src)},spd=${initialSpeed || 1},startTime=${initialTime || 0};
 var REFERER=${JSON.stringify(safeReferer)},ORIGIN=${JSON.stringify(safeOrigin)};
-var introData=${JSON.stringify(intro)}, outroData=${JSON.stringify(outro)};
+var introData=${JSON.stringify(intro)}, outroData=${JSON.stringify(outro)}, autoPlay=${initialAutoPlay};
 
 var _rnt={};
 function rn(t,p){
-  // Never throttle 'qualities' — always send the full level list
-  if(t!=='qualities'){var n=Date.now();if(_rnt[t]&&n-_rnt[t]<200)return;_rnt[t]=n;}
+  if(t==='timeUpdate'){var n=Date.now();if(_rnt[t]&&n-_rnt[t]<100)return;_rnt[t]=n;}
   try{window.ReactNativeWebView.postMessage(JSON.stringify({type:t,payload:p}));}catch(e){}
 }
 
-vid.addEventListener('play',function(){ rn('playbackState', {playing:true}); });
-vid.addEventListener('pause',function(){ rn('playbackState', {playing:false}); });
+vid.addEventListener('play',function(){ rn('playbackState', {playing:true}); if('mediaSession' in navigator) navigator.mediaSession.playbackState='playing'; });
+vid.addEventListener('pause',function(){ rn('playbackState', {playing:false}); if('mediaSession' in navigator) navigator.mediaSession.playbackState='paused'; });
 vid.addEventListener('waiting',function(){ rn('buffering', true); });
 vid.addEventListener('playing',function(){ rn('buffering', false); });
+vid.addEventListener('seeked',function(){ rn('buffering', false); });
+vid.addEventListener('canplay',function(){ rn('buffering', false); });
 vid.addEventListener('ended',function(){ rn('ended', {}); });
 vid.addEventListener('error',function(){ rn('error', {}); });
 
@@ -1088,7 +1199,7 @@ vid.addEventListener('loadedmetadata',function(){
 });
 
 if ('mediaSession' in navigator) {
-  navigator.mediaSession.metadata = new MediaMetadata({ title: ${JSON.stringify(playingTitle || 'Episode')}, artist: ${JSON.stringify(animeTitle || 'Anime')} });
+  navigator.mediaSession.metadata = new MediaMetadata({ title: ${JSON.stringify(animeTitle || 'Episode')}, artist: ${JSON.stringify(animeTitle || 'Anime')} });
   navigator.mediaSession.setActionHandler('play', function() { vid.play().catch(function(){}); });
   navigator.mediaSession.setActionHandler('pause', function() { vid.pause(); });
   navigator.mediaSession.setActionHandler('seekbackward', function() { vid.currentTime = Math.max(0, vid.currentTime - 10); });
@@ -1137,7 +1248,7 @@ function loadSrc(url){
       if(startTime>0){vid.currentTime=startTime;startTime=0;}
       var levels=getLevels();
       rn('qualities',{levels:levels,count:levels.length});
-      vid.play().catch(function(){});
+      if(autoPlay) vid.play().catch(function(){});
     });
     // Re-send all levels once HLS has loaded level metadata (more complete info)
     hls.on(Hls.Events.LEVEL_LOADED,function(){
@@ -1166,7 +1277,7 @@ function loadSrc(url){
       if(spd!==1)vid.playbackRate=spd;
       if(startTime>0){vid.currentTime=startTime;startTime=0;}
     });
-    vid.play().catch(function(){});
+    if(autoPlay) vid.play().catch(function(){});
   } else {
     rn('error', {});
   }
@@ -1182,7 +1293,7 @@ function onMsg(e){
     if(m.type==='setSrc')loadSrc(m.value);
     if(m.type==='setQuality'&&hls){hls.currentLevel=m.value;}
     if(m.type==='setAudioBoost'){vid.volume=m.value/100;}
-    if(m.type==='setSubtitle'){for(var i=0;i<vid.textTracks.length;i++){vid.textTracks[i].mode=m.value?'showing':'hidden';}}
+    if(m.type==='setSubtitle'){for(var i=0;i<vid.textTracks.length;i++){vid.textTracks[i].mode=(!m.value)?'hidden':(vid.textTracks[i].label===m.label?'showing':'hidden');}}
   }catch(_){}
 }
 window.addEventListener('message',onMsg);document.addEventListener('message',onMsg);
@@ -1193,27 +1304,30 @@ loadSrc(src);
 </html>`;
   };
 
-  const toggleSubtitles = (enabled) => {
+  const toggleSubtitles = (enabled, label = selectedSubtitleRef.current) => {
     setSubtitlesEnabled(enabled);
     subtitlesEnabledRef.current = enabled;
+    setSelectedSubtitleLabel(label);
+    selectedSubtitleRef.current = label;
     if (webviewRef.current) {
-      webviewRef.current.postMessage(JSON.stringify({ type: 'setSubtitle', value: enabled }));
+      webviewRef.current.postMessage(JSON.stringify({ type: 'setSubtitle', value: enabled, label: label }));
     }
     setActiveMenu('main');
   };
 
-  const toggleDub = () => {
+  const toggleDub = async () => {
     if (!streamData) return;
     const actuallyHasDub = streamData?.episode?.hasDub || streamData?.sources?.some(s => s.type === 'dub');
-    if (activeType === 'sub' && !actuallyHasDub) {
-      Alert.alert('Not Available', 'Dub is not available for this episode.');
-      return;
-    }
 
     const newType = activeType === 'sub' ? 'dub' : 'sub';
     setActiveType(newType);
     activeTypeRef.current = newType;
     updatePrefs({ defaultType: newType });
+
+    if (newType === 'dub' && !actuallyHasDub) {
+      Alert.alert('Preference Saved', 'Dub is not available for this episode, but we will try to play dub for future episodes. Playing sub for now.');
+      return;
+    }
 
     const sources = streamData.sources || [];
     const isValid = (s) => {
@@ -1244,14 +1358,43 @@ loadSrc(src);
 
     if (chosen) {
       setCurrentServer(chosen.server || '');
-      const streamSrc = chosen.m3u8 || chosen.url;
+      setIsVideoLoading(true);
+
+      let streamSrc = chosen.m3u8;
+      if (!streamSrc && chosen.url && !chosen.url.includes('.m3u8')) {
+        const serverNameLower = (chosen.server || '').toLowerCase();
+        const isVidstreamLike = serverNameLower.includes('vidstream') || serverNameLower.includes('vidplay') || serverNameLower.includes('vid-');
+        let extracted = isVidstreamLike ? await extractVidstream(chosen.url, chosen.referer).catch(() => null) : null;
+        if (!extracted) extracted = await extractStreamUrl(chosen.url);
+        if (extracted) {
+          streamSrc = extracted.m3u8;
+          chosen.m3u8 = extracted.m3u8;
+          if (extracted.referer) chosen.referer = extracted.referer;
+          if (extracted.tracks) chosen.tracks = extracted.tracks;
+          if (extracted.intro) chosen.intro = extracted.intro;
+          if (extracted.outro) chosen.outro = extracted.outro;
+          if (extracted.allSources) chosen.allSources = extracted.allSources;
+        }
+      } else if (!streamSrc && chosen.url) {
+        streamSrc = chosen.url;
+      }
+
       const tracks = chosen.tracks || [];
       const intro = chosen.intro || null;
       const outro = chosen.outro || null;
       const initialTime = progressRef.current?.time || 0;
       let refererBase = 'https://anikoto.net/';
       try { if (chosen.referer) refererBase = new URL(chosen.referer).origin + '/'; } catch (e) { }
-      setStreamUrl({ html: buildPlayerHTML(streamSrc, chosen.referer || '', tracks, playbackSpeed, initialTime, subtitlesEnabledRef.current, intro, outro), baseUrl: refererBase });
+
+      chosenAllSourcesRef.current = chosen.allSources || [];
+      chosenRefererRef.current = chosen.referer || '';
+      chosenTracksRef.current = tracks;
+      refererBaseRef.current = refererBase;
+
+      setIntroData(intro);
+      setOutroData(outro);
+
+      setStreamUrl({ html: buildPlayerHTML(streamSrc, chosen.referer || '', tracks, playbackSpeed, initialTime, subtitlesEnabledRef.current, intro, outro, isPlayingRef.current || prefs.autoPlay), baseUrl: refererBase });
     }
   };
 
@@ -1305,7 +1448,10 @@ loadSrc(src);
     chosenTracksRef.current = tracks;
     refererBaseRef.current = refererBase;
 
-    const playerHTML = buildPlayerHTML(streamSrc, chosen.referer || '', tracks, playbackSpeed, initialTime, subtitlesEnabledRef.current, intro, outro, chosen.allSources || []);
+    setIntroData(intro);
+    setOutroData(outro);
+
+    const playerHTML = buildPlayerHTML(streamSrc, chosen.referer || '', tracks, playbackSpeed, initialTime, subtitlesEnabledRef.current, intro, outro, isPlayingRef.current || prefs.autoPlay);
     setStreamUrl({ html: playerHTML, baseUrl: refererBase });
   };
 
@@ -1342,6 +1488,9 @@ loadSrc(src);
 
   const changeEpisode = async (idx, server, type) => {
     setIsVideoLoading(true);
+    setDuration(0);
+    setCurrentTime(0);
+    durationRef.current = 0;
 
     try {
       const { getHistory } = require('../data/constants');
@@ -1355,6 +1504,8 @@ loadSrc(src);
     } catch (e) {
       progressRef.current = { time: 0, duration: 0 };
     }
+
+    lastSkippedTargetRef.current = 0;
 
     setCurrentEpIdx(idx);
     if (server) setCurrentServer(server);
@@ -1409,12 +1560,12 @@ loadSrc(src);
         { position: 'absolute', zIndex: 1000 },
         (isMinimized && !isInPip)
           ? { left: miniPan.x, top: miniPan.y, width: 220, height: 220 * 9 / 16, borderRadius: 12, overflow: 'hidden', backgroundColor: '#000', elevation: 10, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8 }
-          : { top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#050505', paddingTop: isFullscreen || isInPip ? 0 : insets.top }
+          : { top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#050505', paddingTop: (isFullscreen || isInPip) ? 0 : Math.max(insets.top, 24) }
       ]}
       {...((isMinimized && !isInPip) ? miniPlayerPanResponder.panHandlers : {})}
     >
-      {/* Hide status bar only when in fullscreen, not in PiP (OS handles PiP window) */}
-      <StatusBar hidden={isFullscreen && !isInPip} />
+      {/* Hide status bar only in fullscreen mode */}
+      <StatusBar hidden={isFullscreen} translucent={true} backgroundColor="transparent" barStyle="light-content" />
 
       {/* ── VIDEO PLAYER ─────────────────────────────────────────────────────────── */}
       <View style={[
@@ -1526,6 +1677,12 @@ loadSrc(src);
                     setSkipTarget(msg.payload.skipTarget);
                     setSkipText(msg.payload.skipText);
 
+                    if (prefs.autoSkip && msg.payload.showSkip && msg.payload.skipTarget > 0 && lastSkippedTargetRef.current !== msg.payload.skipTarget) {
+                      lastSkippedTargetRef.current = msg.payload.skipTarget;
+                      webviewRef.current.postMessage(JSON.stringify({ type: 'seek', value: msg.payload.skipTarget }));
+                      setShowSkip(false);
+                    }
+
                     progressRef.current = { time: msg.payload.time, duration: msg.payload.duration };
                     const now = Date.now();
                     if (!progressRef.current._lastSave || now - progressRef.current._lastSave > 15000) {
@@ -1592,7 +1749,7 @@ loadSrc(src);
 
             {/* Miniplayer Controls */}
             {isMinimized && (
-              <View style={[StyleSheet.absoluteFill, { backgroundColor: 'transparent', zIndex: 20 }]}>
+              <View style={[StyleSheet.absoluteFill, { backgroundColor: 'transparent', zIndex: 20, elevation: 20 }]}>
                 <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => {
                   LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
                   maximize();
@@ -1612,11 +1769,15 @@ loadSrc(src);
             )}
 
             {/* UI Layer */}
-            {!isInPip && !isMinimized && isControlsVisible && (
-              <Animated.View style={[StyleSheet.absoluteFill, { zIndex: 10, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'space-between' }]} {...panResponder.panHandlers}>
+            {!isInPip && !isMinimized && (
+              <Animated.View
+                pointerEvents={isControlsVisible ? 'auto' : 'none'}
+                style={[StyleSheet.absoluteFill, { zIndex: 10, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'space-between', opacity: controlsOpacity }]}
+                {...panResponder.panHandlers}
+              >
 
                 {/* Modern Top Bar */}
-                <LinearGradient colors={['rgba(0,0,0,0.7)', 'transparent']} style={[S.nativeTopBar, { paddingLeft: Math.max(insets.left, 8), paddingRight: Math.max(insets.right, 8) }]} pointerEvents="box-none">
+                <LinearGradient colors={['rgba(0,0,0,0.7)', 'transparent']} style={[S.nativeTopBar, { paddingTop: isFullscreen ? Math.max(insets.top, 16) : 10, paddingLeft: Math.max(insets.left, 8), paddingRight: Math.max(insets.right, 8) }]} pointerEvents="box-none">
                   <TouchableOpacity onPress={handleBackPress} style={S.blurBtn}>
                     <Ionicons name="chevron-down" size={28} color="#fff" />
                   </TouchableOpacity>
@@ -1661,10 +1822,18 @@ loadSrc(src);
 
                 {/* Full-width Bottom Controls */}
                 <View style={{ position: 'absolute', bottom: isFullscreen ? Math.max(insets.bottom, 24) : 0, left: 0, right: 0 }} pointerEvents="box-none">
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: Math.max(insets.left, 16), paddingRight: Math.max(insets.right, 16), paddingBottom: 16 }}>
-                    <Text style={{ color: '#fff', fontSize: 13, fontWeight: '500' }}>
-                      {formatTime(isScrubbing ? scrubTime : currentTime)} <Text style={{ color: '#ccc' }}>/ {formatTime(duration)}</Text>
-                    </Text>
+                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: Math.max(insets.left, 16), paddingRight: Math.max(insets.right, 16), paddingBottom: 10, zIndex: 10 }}>
+                    {/* YouTube Style Time Pill */}
+                    <View style={S.timePillContainer}>
+                      <Text style={S.timePillCurrent}>
+                        {formatTime(isScrubbing ? scrubTime : currentTime)}
+                      </Text>
+                      <Text style={S.timePillSep}> / </Text>
+                      <Text style={S.timePillDuration}>
+                        {formatTime(duration)}
+                      </Text>
+                    </View>
+
                     <TouchableOpacity onPress={() => toggleFullscreenState()} style={{ padding: 4 }}>
                       <Ionicons name={isFullscreen ? "contract" : "expand"} size={20} color="#fff" />
                     </TouchableOpacity>
@@ -1674,6 +1843,14 @@ loadSrc(src);
                     <View style={{ flex: 1 }} pointerEvents="none">
                       <View style={S.nativeProgressTrack} />
                       <View style={[S.nativeProgressBuffered, { width: `${duration > 0 ? Math.min(100, (bufferedTime / duration) * 100) : 0}%` }]} />
+
+                      {introData && duration > 0 && (
+                        <View style={{ position: 'absolute', bottom: 0, height: 2, backgroundColor: 'rgba(252, 165, 109, 0.6)', left: `${(introData.start / duration) * 100}%`, width: `${((introData.end - introData.start) / duration) * 100}%`, borderRadius: 2 }} />
+                      )}
+                      {outroData && duration > 0 && (
+                        <View style={{ position: 'absolute', bottom: 0, height: 2, backgroundColor: 'rgba(252, 165, 109, 0.6)', left: `${(outroData.start / duration) * 100}%`, width: `${((outroData.end - outroData.start) / duration) * 100}%`, borderRadius: 2 }} />
+                      )}
+
                       <View style={[S.nativeProgressFill, { width: `${duration > 0 ? Math.min(100, ((isScrubbing ? scrubTime : currentTime) / duration) * 100) : 0}%` }]} />
                       <View style={[S.nativeProgressDot, { left: `${duration > 0 ? Math.min(100, ((isScrubbing ? scrubTime : currentTime) / duration) * 100) : 0}%`, marginLeft: -6 }]} />
                     </View>
@@ -1705,8 +1882,8 @@ loadSrc(src);
             )}
 
             {/* Skip Intro Button */}
-            {!isInPip && !isMinimized && showSkip && isControlsVisible && (
-              <TouchableOpacity style={[S.nativeSkipBtn, { bottom: Math.max(insets.bottom, 90) + 20, right: Math.max(insets.right, 20) }]} onPress={() => {
+            {!isInPip && !isMinimized && showSkip && (
+              <TouchableOpacity style={[S.nativeSkipBtn, { bottom: Math.max(insets.bottom, isFullscreen ? 60 : 50), right: Math.max(insets.right, 20) }]} onPress={() => {
                 if (webviewRef.current) webviewRef.current.postMessage(JSON.stringify({ type: 'seek', value: skipTarget }));
                 setShowSkip(false);
               }}>
@@ -2090,8 +2267,12 @@ loadSrc(src);
               {/* Drag handle */}
               <View style={S.settingsHandleWrap}><View style={S.settingsHandle} /></View>
               <ScrollView
-                showsVerticalScrollIndicator={false}
+                style={{ flexShrink: 1, flexGrow: 1, width: '100%', maxHeight: '100%' }}
+                contentContainerStyle={{ paddingBottom: isFullscreen ? 40 : 20 }}
+                showsVerticalScrollIndicator={true}
+                indicatorStyle="white"
                 bounces={false}
+                nestedScrollEnabled={true}
                 onScroll={(e) => { settingsScrollY.current = e.nativeEvent.contentOffset.y; }}
                 scrollEventThrottle={16}
               >
@@ -2128,7 +2309,7 @@ loadSrc(src);
                       <Ionicons name="chatbox-ellipses-outline" size={20} color="#9ca3af" />
                       <Text style={S.settingsRowText}>Subtitles/CC</Text>
                       <View style={{ flex: 1 }} />
-                      <Text style={S.settingsRowValue}>{subtitlesEnabled ? 'On' : 'Off'}</Text>
+                      <Text style={S.settingsRowValue}>{subtitlesEnabled ? selectedSubtitleLabel : 'Off'}</Text>
                       <Ionicons name="chevron-forward" size={16} color="#6b7280" style={{ marginLeft: 4 }} />
                     </TouchableOpacity>
                     {/* Quality */}
@@ -2224,18 +2405,23 @@ loadSrc(src);
                       </TouchableOpacity>
                       <Text style={S.settingsSubHeaderText}>Subtitles/CC</Text>
                     </View>
-                    <TouchableOpacity style={S.settingsRow} onPress={() => toggleSubtitles(true)}>
-                      <View style={{ width: 28 }} />
-                      <Text style={S.settingsRowText}>On (Default)</Text>
-                      <View style={{ flex: 1 }} />
-                      {subtitlesEnabled && <Ionicons name="checkmark" size={20} color="#fff" />}
-                    </TouchableOpacity>
                     <TouchableOpacity style={S.settingsRow} onPress={() => toggleSubtitles(false)}>
                       <View style={{ width: 28 }} />
                       <Text style={S.settingsRowText}>Off</Text>
                       <View style={{ flex: 1 }} />
                       {!subtitlesEnabled && <Ionicons name="checkmark" size={20} color="#fff" />}
                     </TouchableOpacity>
+                    {availableSubtitles.map((sub, idx) => {
+                      const isSelected = subtitlesEnabled && selectedSubtitleLabel === sub.label;
+                      return (
+                        <TouchableOpacity key={`${sub.label}-${idx}`} style={S.settingsRow} onPress={() => toggleSubtitles(true, sub.label)}>
+                          <View style={{ width: 28 }} />
+                          <Text style={S.settingsRowText}>{sub.label}</Text>
+                          <View style={{ flex: 1 }} />
+                          {isSelected && <Ionicons name="checkmark" size={20} color="#fff" />}
+                        </TouchableOpacity>
+                      )
+                    })}
                   </View>
                 )}
 
@@ -2509,6 +2695,7 @@ const S = StyleSheet.create({
     borderTopLeftRadius: 22, borderTopRightRadius: 22,
     paddingHorizontal: 16, paddingTop: 10,
     maxHeight: '80%',
+    flexShrink: 1,
     shadowColor: '#000', shadowOffset: { width: 0, height: -10 }, shadowOpacity: 0.5, shadowRadius: 20,
     elevation: 20,
   },
@@ -2544,11 +2731,26 @@ const S = StyleSheet.create({
   blurBtn: { padding: 8 },
   giantPlayBtn: { width: 80, height: 80, borderRadius: 40, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' },
   floatingPill: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12 },
-  nativeProgressBarContainer: { height: 24, justifyContent: 'flex-end', paddingBottom: 0 },
+  nativeProgressBarContainer: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 24, justifyContent: 'flex-end', paddingBottom: 0, zIndex: 5 },
   nativeProgressTrack: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 2, backgroundColor: 'rgba(255,255,255,0.3)' },
   nativeProgressBuffered: { position: 'absolute', left: 0, bottom: 0, height: 2, backgroundColor: 'rgba(255,255,255,0.6)' },
   nativeProgressFill: { position: 'absolute', left: 0, bottom: 0, height: 2, backgroundColor: '#FF0000' },
   nativeProgressDot: { position: 'absolute', width: 12, height: 12, borderRadius: 6, backgroundColor: '#FF0000', bottom: -5, zIndex: 5 },
-  nativeSkipBtn: { position: 'absolute', bottom: 60, right: 20, zIndex: 15, backgroundColor: 'rgba(20,20,20,0.85)', borderColor: 'rgba(255,255,255,0.1)', borderWidth: 1, paddingHorizontal: 20, paddingVertical: 10, borderRadius: 20 },
-  nativeSkipText: { color: '#fff', fontSize: 14, fontWeight: '700' },
+  nativeSkipBtn: { position: 'absolute', zIndex: 15, backgroundColor: 'rgba(20,20,20,0.85)', borderColor: 'rgba(255,255,255,0.1)', borderWidth: 1, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 16 },
+  nativeSkipText: { color: '#fff', fontSize: 13, fontWeight: '700' },
+  centerPlayBtn: {
+    width: 60, height: 60, borderRadius: 30,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.2)',
+  },
+  timePillContainer: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    paddingHorizontal: 8, paddingVertical: 2,
+    borderRadius: 12, borderWidth: 0.5, borderColor: 'rgba(255,255,255,0.12)',
+  },
+  timePillCurrent: { color: '#ffffff', fontSize: 11, fontWeight: '700' },
+  timePillSep: { color: 'rgba(255,255,255,0.5)', fontSize: 11, fontWeight: '500' },
+  timePillDuration: { color: 'rgba(255,255,255,0.7)', fontSize: 11, fontWeight: '500' },
 });
