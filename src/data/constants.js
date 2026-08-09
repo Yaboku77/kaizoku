@@ -49,10 +49,23 @@ export async function saveToHistory({ animeId, animeTitle, coverImage, episodeIn
 export async function updateProgress({ animeId, episodeIndex, progress, duration }) {
   try {
     const raw = await AsyncStorage.getItem(HISTORY_KEY);
-    if (!raw) return;
-    const h = JSON.parse(raw);
+    let h = raw ? JSON.parse(raw) : [];
     const idx = h.findIndex(x => String(x.animeId) === String(animeId) && String(x.episodeIndex) === String(episodeIndex));
-    if (idx >= 0) { h[idx].progress = progress; h[idx].duration = duration; h[idx].savedAt = Date.now(); await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(h)); }
+    if (idx >= 0) {
+      h[idx].progress = progress;
+      if (duration) h[idx].duration = duration;
+      h[idx].savedAt = Date.now();
+    } else {
+      h.unshift({
+        animeId,
+        episodeIndex: Number(episodeIndex) || 0,
+        progress,
+        duration: duration || 0,
+        savedAt: Date.now(),
+      });
+      if (h.length > MAX_HISTORY) h = h.slice(0, MAX_HISTORY);
+    }
+    await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(h));
   } catch (e) {}
 }
 

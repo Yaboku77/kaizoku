@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, Image,
   Dimensions, ActivityIndicator, StatusBar, Alert, Modal, BackHandler, TouchableWithoutFeedback,
-  LayoutAnimation, UIManager, Platform, Switch, Animated, AppState, PanResponder
+  LayoutAnimation, UIManager, Platform, Switch, Animated, AppState, PanResponder, useWindowDimensions
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as ScreenOrientation from 'expo-screen-orientation';
@@ -193,6 +193,9 @@ function PlayerScreenInner() {
   const [isControlsVisible, setIsControlsVisible] = useState(true);
   const controlsOpacity = useRef(new Animated.Value(1)).current;
 
+  // Stream animation translation for smooth swipe up/down transitions
+  const streamTranslateY = useRef(new Animated.Value(0)).current;
+
   const [availableSubtitles, setAvailableSubtitles] = useState([]);
   const [selectedSubtitleLabel, setSelectedSubtitleLabel] = useState('English');
   const selectedSubtitleRef = useRef('English');
@@ -207,7 +210,6 @@ function PlayerScreenInner() {
       useNativeDriver: true,
     }).start();
   }, [isControlsVisible]);
-
 
   const [isScrubbing, setIsScrubbing] = useState(false);
   const [scrubTime, setScrubTime] = useState(0);
@@ -225,8 +227,8 @@ function PlayerScreenInner() {
   const chosenTracksRef = useRef([]);
   const refererBaseRef = useRef('https://anikoto.net/');
 
-  // Progress bar track width (measured via onLayout for pixel-accurate dot positioning)
-  const [trackWidth, setTrackWidth] = useState(0);
+  // Progress bar animated scale for scrub dot
+  const scrubDotScale = useRef(new Animated.Value(1)).current;
 
   // Progressive skip states
   const [skipAccumulator, setSkipAccumulator] = useState(0);
@@ -239,6 +241,40 @@ function PlayerScreenInner() {
   const [isHoldingSpeed, setIsHoldingSpeed] = useState(false);
   const isHoldingSpeedRef = useRef(false);
   const longPressTimerRef = useRef(null);
+
+  // Save current playback progress helper (local + cloud)
+  const saveCurrentProgress = useCallback((explicitTime = null, explicitDuration = null) => {
+    const t = explicitTime !== null ? explicitTime : (progressRef.current?.time || currentTime || 0);
+    const d = explicitDuration !== null ? explicitDuration : (progressRef.current?.duration || duration || 0);
+    if (t > 1 && animeId) {
+      updateProgress({ animeId, episodeIndex: currentEpIdx, progress: t, duration: d });
+      if (user?.uid) {
+        updateProgressInCloud(user.uid, animeId, currentEpIdx, t, d).catch(() => { });
+      }
+    }
+  }, [animeId, currentEpIdx, currentTime, duration, user?.uid]);
+
+  // Load saved watch position from history on mount / episode change
+  useEffect(() => {
+    let isMounted = true;
+    const loadSavedProgress = async () => {
+      try {
+        const { getHistory } = require('../data/constants');
+        const h = await getHistory();
+        const epIdx = data.episodeIndex !== undefined ? data.episodeIndex : currentEpIdx;
+        const existing = h.find(x => String(x.animeId) === String(data.animeId) && String(x.episodeIndex) === String(epIdx));
+        if (existing && existing.progress > 0 && isMounted) {
+          progressRef.current = { time: existing.progress, duration: existing.duration || 0 };
+          setCurrentTime(existing.progress);
+          if (existing.duration) setDuration(existing.duration);
+        }
+      } catch (e) { }
+    };
+    if (data?.animeId) {
+      loadSavedProgress();
+    }
+    return () => { isMounted = false; };
+  }, [data?.animeId, data?.episodeIndex]);
 
   const applyPlaybackRate = (rate) => {
     if (webviewRef.current) {
@@ -254,6 +290,11 @@ function PlayerScreenInner() {
     }
   };
 
+  const hideControls = () => {
+    if (controlsHideTimeout.current) clearTimeout(controlsHideTimeout.current);
+    setIsControlsVisible(false);
+  };
+
   const togglePlayPause = (forceState) => {
     if (webviewRef.current) {
       if (forceState === true) {
@@ -262,10 +303,12 @@ function PlayerScreenInner() {
       } else if (forceState === false) {
         webviewRef.current.postMessage(JSON.stringify({ type: 'pause' }));
         setIsPlaying(false);
+        saveCurrentProgress();
       } else {
         if (isPlaying) {
           webviewRef.current.postMessage(JSON.stringify({ type: 'pause' }));
           setIsPlaying(false);
+          saveCurrentProgress();
         } else {
           webviewRef.current.postMessage(JSON.stringify({ type: 'play' }));
           setIsPlaying(true);
@@ -276,7 +319,21 @@ function PlayerScreenInner() {
   };
 
   const skipBy = (seconds) => {
+    const dur = durationRef.current || duration || 0;
+    const newTime = Math.max(0, Math.min(dur, currentTime + seconds));
+    lastSeekTimeRef.current = Date.now();
+    setCurrentTime(newTime);
+    setScrubTime(newTime);
     if (webviewRef.current) {
+      webviewRef.current.injectJavaScript(`
+        try {
+          var v = document.getElementById('vid') || document.querySelector('video');
+          if (v) {
+            v.currentTime = ${newTime};
+          }
+        } catch(e) {}
+        true;
+      `);
       webviewRef.current.postMessage(JSON.stringify({ type: 'seekBy', value: seconds }));
     }
     showControls();
@@ -310,34 +367,57 @@ function PlayerScreenInner() {
   const panResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => false,
-      onPanResponderGrant: (evt, gestureState) => {
-        // Start long-press timer for 2x speed
+      onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) > 8 || Math.abs(g.dy) > 8,
+      onPanResponderGrant: () => {
         longPressTimerRef.current = setTimeout(() => {
           isHoldingSpeedRef.current = true;
           setIsHoldingSpeed(true);
           applyPlaybackRate(2);
         }, 400);
       },
+      onPanResponderMove: (_, gestureState) => {
+        const { dy, dx } = gestureState;
+        if (Math.abs(dy) > 12 || Math.abs(dx) > 12) {
+          if (longPressTimerRef.current) {
+            clearTimeout(longPressTimerRef.current);
+            longPressTimerRef.current = null;
+          }
+          if (isHoldingSpeedRef.current) {
+            isHoldingSpeedRef.current = false;
+            setIsHoldingSpeed(false);
+            applyPlaybackRate(1);
+          }
+        }
+        // Smooth and pronounced real-time stream movement during swipe gesture
+        if (Math.abs(dy) > Math.abs(dx)) {
+          if (!isFullscreenRef.current && dy < 0) {
+            // Swiping UP in portrait — lift stream up
+            const clamped = Math.max(-45, dy * 0.45);
+            streamTranslateY.setValue(clamped);
+          } else if (isFullscreenRef.current && dy > 0 && gestureState.y0 >= 40) {
+            // Swiping DOWN in landscape — settle stream down
+            const clamped = Math.min(45, dy * 0.45);
+            streamTranslateY.setValue(clamped);
+          }
+        }
+      },
       onPanResponderRelease: (evt, gestureState) => {
-        // Clear long-press timer
         if (longPressTimerRef.current) {
           clearTimeout(longPressTimerRef.current);
           longPressTimerRef.current = null;
         }
-        // If we were in 2x mode, revert to 1x
         if (isHoldingSpeedRef.current) {
           isHoldingSpeedRef.current = false;
           setIsHoldingSpeed(false);
           applyPlaybackRate(1);
-          return; // Don't process tap/swipe when releasing from hold
+          return;
         }
         const { dx, dy } = gestureState;
-        if (Math.abs(dx) > 30 || Math.abs(dy) > 30) {
-          // Swipe
-          if (Math.abs(dy) > Math.abs(dx) && dy > 30) {
+        if (Math.abs(dx) > 22 || Math.abs(dy) > 22) {
+          if (Math.abs(dy) > Math.abs(dx) && dy > 25) {
             // Swipe Down
             if (!isFullscreenRef.current) {
+              Animated.spring(streamTranslateY, { toValue: 0, friction: 7, tension: 50, useNativeDriver: true }).start();
               if (prefs.miniplayer) {
                 LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
                 minimize();
@@ -345,18 +425,33 @@ function PlayerScreenInner() {
                 close();
               }
             } else {
-              // Ignore swipe down in fullscreen if it starts near the top edge (e.g. status bar pull)
-              if (gestureState.y0 < 50) return;
-              toggleFullscreenState(false);
+              if (gestureState.y0 < 40) {
+                Animated.spring(streamTranslateY, { toValue: 0, friction: 7, tension: 50, useNativeDriver: true }).start();
+                return;
+              }
+              // Animate down smoothly and exit fullscreen
+              Animated.timing(streamTranslateY, { toValue: 36, duration: 120, useNativeDriver: true }).start(() => {
+                streamTranslateY.setValue(0);
+              });
+              toggleFullscreenState(false, false);
             }
-          } else if (Math.abs(dy) > Math.abs(dx) && dy < -30) {
+          } else if (Math.abs(dy) > Math.abs(dx) && dy < -25) {
             // Swipe Up
             if (!isFullscreenRef.current) {
-              toggleFullscreenState(true);
+              // Animate up smoothly and enter fullscreen
+              Animated.timing(streamTranslateY, { toValue: -36, duration: 120, useNativeDriver: true }).start(() => {
+                streamTranslateY.setValue(0);
+              });
+              toggleFullscreenState(true, false);
+            } else {
+              Animated.spring(streamTranslateY, { toValue: 0, friction: 7, tension: 50, useNativeDriver: true }).start();
             }
+          } else {
+            Animated.spring(streamTranslateY, { toValue: 0, friction: 7, tension: 50, useNativeDriver: true }).start();
           }
         } else {
-          // Tap
+          Animated.spring(streamTranslateY, { toValue: 0, friction: 7, tension: 50, useNativeDriver: true }).start();
+          // Tap / Double Tap
           const now = Date.now();
           const DOUBLE_PRESS_DELAY = 300;
           if (now - (webviewRef.current?._lastTap || 0) < DOUBLE_PRESS_DELAY) {
@@ -378,6 +473,18 @@ function PlayerScreenInner() {
             }
           }
         }
+      },
+      onPanResponderTerminate: () => {
+        if (longPressTimerRef.current) {
+          clearTimeout(longPressTimerRef.current);
+          longPressTimerRef.current = null;
+        }
+        if (isHoldingSpeedRef.current) {
+          isHoldingSpeedRef.current = false;
+          setIsHoldingSpeed(false);
+          applyPlaybackRate(1);
+        }
+        Animated.spring(streamTranslateY, { toValue: 0, friction: 7, tension: 50, useNativeDriver: true }).start();
       }
     })
   ).current;
@@ -437,44 +544,81 @@ function PlayerScreenInner() {
     })
   ).current;
 
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const progressBarRef = useRef(null);
+  const progressBarLayout = useRef({ x: 0, width: 0 });
+  const [trackWidth, setTrackWidth] = useState(0);
+  const lastSeekTimeRef = useRef(0);
+
+  const updateScrubPosition = (pageX) => {
+    const safeLeft = isFullscreenRef.current ? Math.max(insetsRef.current?.left || 0, 16) : 0;
+    const safeRight = isFullscreenRef.current ? Math.max(insetsRef.current?.right || 0, 16) : 0;
+    const fallbackWidth = Math.max(1, windowWidth - safeLeft - safeRight);
+
+    const totalWidth = progressBarLayout.current.width > 0 ? progressBarLayout.current.width : (trackWidth > 0 ? trackWidth : fallbackWidth);
+    const startX = progressBarLayout.current.x > 0 ? progressBarLayout.current.x : safeLeft;
+
+    const relativeX = (pageX || 0) - startX;
+    const percentage = Math.max(0, Math.min(1, relativeX / totalWidth));
+    const totalDuration = durationRef.current || duration || 0;
+    const newTime = percentage * totalDuration;
+    setScrubTime(newTime);
+    return { percentage, newTime };
+  };
+
   const scrubPanResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
-      onPanResponderGrant: (e, gestureState) => {
+      onStartShouldSetPanResponderCapture: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponderCapture: () => true,
+      onPanResponderGrant: (e) => {
         setIsScrubbing(true);
         isScrubbingRef.current = true;
-
-        const { width } = Dimensions.get('window');
-        const safeLeft = isFullscreenRef.current ? Math.max(insetsRef.current?.left || 0, 16) : 0;
-        const safeRight = isFullscreenRef.current ? Math.max(insetsRef.current?.right || 0, 16) : 0;
-        const trackWidth = width - safeLeft - safeRight;
-        const percentage = Math.max(0, Math.min(1, (e.nativeEvent.pageX - safeLeft) / trackWidth));
-        setScrubTime(percentage * durationRef.current);
-
+        Animated.spring(scrubDotScale, { toValue: 1.6, friction: 5, useNativeDriver: true }).start();
         if (controlsHideTimeout.current) clearTimeout(controlsHideTimeout.current);
+        const x = e.nativeEvent.pageX;
+        updateScrubPosition(x);
       },
       onPanResponderMove: (e, gestureState) => {
-        const { width } = Dimensions.get('window');
-        const safeLeft = isFullscreenRef.current ? Math.max(insetsRef.current?.left || 0, 16) : 0;
-        const safeRight = isFullscreenRef.current ? Math.max(insetsRef.current?.right || 0, 16) : 0;
-        const trackWidth = width - safeLeft - safeRight;
-        const percentage = Math.max(0, Math.min(1, (gestureState.moveX - safeLeft) / trackWidth));
-        setScrubTime(percentage * durationRef.current);
+        const x = gestureState.moveX || e.nativeEvent.pageX;
+        updateScrubPosition(x);
       },
       onPanResponderRelease: (e, gestureState) => {
+        Animated.spring(scrubDotScale, { toValue: 1, friction: 5, useNativeDriver: true }).start();
+        const x = gestureState.moveX || e.nativeEvent.pageX;
+        const res = updateScrubPosition(x);
+
         setIsScrubbing(false);
         isScrubbingRef.current = false;
 
-        const { width } = Dimensions.get('window');
-        const safeLeft = isFullscreenRef.current ? Math.max(insetsRef.current?.left || 0, 16) : 0;
-        const safeRight = isFullscreenRef.current ? Math.max(insetsRef.current?.right || 0, 16) : 0;
-        const trackWidth = width - safeLeft - safeRight;
-        const percentage = Math.max(0, Math.min(1, (gestureState.moveX - safeLeft) / trackWidth));
+        const dur = durationRef.current || duration || 0;
+        if (res && dur > 0) {
+          lastSeekTimeRef.current = Date.now();
+          setCurrentTime(res.newTime);
+          setScrubTime(res.newTime);
+          saveCurrentProgress(res.newTime, dur);
 
-        if (durationRef.current && webviewRef.current) {
-          webviewRef.current.postMessage(JSON.stringify({ type: 'seek', value: percentage * durationRef.current }));
-          setCurrentTime(percentage * durationRef.current);
+          if (webviewRef.current) {
+            webviewRef.current.injectJavaScript(`
+              try {
+                var v = document.getElementById('vid') || document.querySelector('video');
+                if (v) {
+                  v.currentTime = ${res.newTime};
+                }
+              } catch(e) {}
+              true;
+            `);
+            webviewRef.current.postMessage(JSON.stringify({ type: 'seek', value: res.newTime }));
+          }
         }
+        showControls();
+      },
+      onPanResponderTerminationRequest: () => false,
+      onPanResponderTerminate: () => {
+        Animated.spring(scrubDotScale, { toValue: 1, friction: 5, useNativeDriver: true }).start();
+        setIsScrubbing(false);
+        isScrubbingRef.current = false;
         showControls();
       }
     })
@@ -497,17 +641,20 @@ function PlayerScreenInner() {
   const [userReaction, setUserReaction] = useState(null);
   const [prefsLoaded, setPrefsLoaded] = useState(false);
 
-  const screenHeight = Dimensions.get('window').height;
-  const descSlideY = useRef(new Animated.Value(screenHeight)).current;
-  const settingsSlideY = useRef(new Animated.Value(screenHeight)).current;
+  const descSlideY = useRef(new Animated.Value(windowHeight)).current;
+  const settingsSlideY = useRef(new Animated.Value(windowHeight)).current;
+  const settingsFadeAnim = useRef(new Animated.Value(0)).current;
+  const settingsScaleAnim = useRef(new Animated.Value(0.95)).current;
 
   // Refs so the AppState closure always reads the latest values (avoids stale closure)
 
   // Enter native PiP automatically when the user backgrounds the app while playing.
-  // We intentionally pass [] and use refs so this listener is only created once
-  // but always reads the freshest values — avoids stale-closure issues.
+  // Also save progress immediately on background or inactive.
   useEffect(() => {
     const subscription = AppState.addEventListener('change', nextAppState => {
+      if (nextAppState === 'background' || nextAppState === 'inactive') {
+        saveCurrentProgress();
+      }
       if (
         nextAppState === 'background' &&
         isActive &&
@@ -521,18 +668,18 @@ function PlayerScreenInner() {
       }
     });
     return () => subscription.remove();
-  }, [isActive]);
+  }, [isActive, saveCurrentProgress]);
 
   useEffect(() => {
     if (isDescOpen) {
       setInternalDescOpen(true);
       Animated.spring(descSlideY, { toValue: 0, useNativeDriver: true, bounciness: 0 }).start();
     } else {
-      Animated.timing(descSlideY, { toValue: screenHeight, duration: 250, useNativeDriver: true }).start(() => {
+      Animated.timing(descSlideY, { toValue: windowHeight, duration: 250, useNativeDriver: true }).start(() => {
         setInternalDescOpen(false);
       });
     }
-  }, [isDescOpen]);
+  }, [isDescOpen, windowHeight]);
 
   const closeDescription = () => {
     setIsDescOpen(false);
@@ -561,14 +708,31 @@ function PlayerScreenInner() {
   useEffect(() => {
     if (isSettingsOpen) {
       setInternalSettingsOpen(true);
-      Animated.spring(settingsSlideY, { toValue: 0, useNativeDriver: true, bounciness: 0 }).start();
+      if (isFullscreenRef.current) {
+        Animated.parallel([
+          Animated.timing(settingsFadeAnim, { toValue: 1, duration: 200, useNativeDriver: true }),
+          Animated.spring(settingsScaleAnim, { toValue: 1, friction: 6, useNativeDriver: true })
+        ]).start();
+      } else {
+        Animated.spring(settingsSlideY, { toValue: 0, useNativeDriver: true, bounciness: 0 }).start();
+      }
     } else {
-      Animated.timing(settingsSlideY, { toValue: screenHeight, duration: 250, useNativeDriver: true }).start(() => {
-        setInternalSettingsOpen(false);
-        setActiveMenu('main');
-      });
+      if (isFullscreenRef.current) {
+        Animated.parallel([
+          Animated.timing(settingsFadeAnim, { toValue: 0, duration: 150, useNativeDriver: true }),
+          Animated.timing(settingsScaleAnim, { toValue: 0.95, duration: 150, useNativeDriver: true })
+        ]).start(() => {
+          setInternalSettingsOpen(false);
+          setActiveMenu('main');
+        });
+      } else {
+        Animated.timing(settingsSlideY, { toValue: windowHeight, duration: 250, useNativeDriver: true }).start(() => {
+          setInternalSettingsOpen(false);
+          setActiveMenu('main');
+        });
+      }
     }
-  }, [isSettingsOpen]);
+  }, [isSettingsOpen, windowHeight]);
 
   const closeSettings = () => {
     setIsSettingsOpen(false);
@@ -577,15 +741,15 @@ function PlayerScreenInner() {
   const settingsScrollY = useRef(0);
   const settingsPanResponder = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => false,
-      onMoveShouldSetPanResponderCapture: (_, g) => g.dy > 15 && Math.abs(g.dx) < 30 && settingsScrollY.current <= 0,
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: (_, g) => g.dy > 5 && Math.abs(g.dx) < 20,
       onPanResponderMove: (_, g) => {
         if (g.dy > 0) {
           settingsSlideY.setValue(g.dy);
         }
       },
       onPanResponderRelease: (_, g) => {
-        if (g.dy > 100 || g.vy > 1) {
+        if (g.dy > 80 || g.vy > 0.8) {
           closeSettings();
         } else {
           Animated.spring(settingsSlideY, { toValue: 0, useNativeDriver: true, bounciness: 0 }).start();
@@ -705,7 +869,7 @@ function PlayerScreenInner() {
     setIsSaveMenuOpen(false);
   };
 
-  const toggleFullscreenState = async (forceState) => {
+  const toggleFullscreenState = async (forceState, animated = true) => {
     // If an event object is accidentally passed (from onPress), ignore it
     const isEvent = forceState && typeof forceState === 'object' && forceState.nativeEvent;
     const nextState = (forceState !== undefined && !isEvent) ? forceState : !isFullscreenRef.current;
@@ -713,6 +877,24 @@ function PlayerScreenInner() {
 
     isFullscreenRef.current = nextState;
     setIsFullscreen(nextState);
+
+    if (animated) {
+      Animated.sequence([
+        Animated.timing(streamTranslateY, {
+          toValue: nextState ? -36 : 36,
+          duration: 130,
+          useNativeDriver: true,
+        }),
+        Animated.spring(streamTranslateY, {
+          toValue: 0,
+          friction: 7,
+          tension: 45,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    } else {
+      streamTranslateY.setValue(0);
+    }
 
     webviewRef.current?.injectJavaScript(`
       try {
@@ -825,15 +1007,9 @@ function PlayerScreenInner() {
     }
     // On unmount, save final progress (local + cloud)
     return () => {
-      const { time, duration } = progressRef.current;
-      if (time > 5) {
-        updateProgress({ animeId, episodeIndex: currentEpIdx, progress: time, duration });
-        if (user?.uid) {
-          updateProgressInCloud(user.uid, animeId, currentEpIdx, time, duration).catch(() => { });
-        }
-      }
+      saveCurrentProgress();
     };
-  }, [animeId, currentEpIdx, user?.uid]);
+  }, [animeId, currentEpIdx, user?.uid, saveCurrentProgress]);
 
   // Hardware back button
   const handleBackPress = () => {
@@ -1199,11 +1375,22 @@ vid.addEventListener('loadedmetadata',function(){
 });
 
 if ('mediaSession' in navigator) {
-  navigator.mediaSession.metadata = new MediaMetadata({ title: ${JSON.stringify(animeTitle || 'Episode')}, artist: ${JSON.stringify(animeTitle || 'Anime')} });
-  navigator.mediaSession.setActionHandler('play', function() { vid.play().catch(function(){}); });
-  navigator.mediaSession.setActionHandler('pause', function() { vid.pause(); });
-  navigator.mediaSession.setActionHandler('seekbackward', function() { vid.currentTime = Math.max(0, vid.currentTime - 10); });
-  navigator.mediaSession.setActionHandler('seekforward', function() { vid.currentTime = Math.min(vid.duration || 0, vid.currentTime + 10); });
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: ${JSON.stringify(playingTitle || animeTitle || 'Episode')},
+      artist: ${JSON.stringify(animeTitle || 'Kaizoku')},
+      artwork: [
+        { src: ${JSON.stringify(coverImage || '')}, sizes: '512x512', type: 'image/jpeg' }
+      ]
+    });
+    navigator.mediaSession.setActionHandler('play', function() { vid.play().catch(function(){}); rn('playbackState', {playing:true}); });
+    navigator.mediaSession.setActionHandler('pause', function() { vid.pause(); rn('playbackState', {playing:false}); });
+    navigator.mediaSession.setActionHandler('seekto', function(details) { if (details.seekTime !== undefined) vid.currentTime = details.seekTime; });
+    navigator.mediaSession.setActionHandler('seekbackward', function() { vid.currentTime = Math.max(0, vid.currentTime - 10); });
+    navigator.mediaSession.setActionHandler('seekforward', function() { vid.currentTime = Math.min(vid.duration || 0, vid.currentTime + 10); });
+    navigator.mediaSession.setActionHandler('previoustrack', function() { rn('prevEpisode', {}); });
+    navigator.mediaSession.setActionHandler('nexttrack', function() { rn('nextEpisode', {}); });
+  } catch(e) {}
 }
 
 function loadSrc(url){
@@ -1487,7 +1674,9 @@ loadSrc(src);
   }, [prefs.audioBoost]);
 
   const changeEpisode = async (idx, server, type) => {
+    saveCurrentProgress();
     setIsVideoLoading(true);
+    setIsStreamLoading(true);
     setDuration(0);
     setCurrentTime(0);
     durationRef.current = 0;
@@ -1498,6 +1687,8 @@ loadSrc(src);
       const existing = h.find(x => String(x.animeId) === String(animeId) && String(x.episodeIndex) === String(idx));
       if (existing && existing.progress > 0) {
         progressRef.current = { time: existing.progress, duration: existing.duration || 0 };
+        setCurrentTime(existing.progress);
+        if (existing.duration) setDuration(existing.duration);
       } else {
         progressRef.current = { time: 0, duration: 0 };
       }
@@ -1554,6 +1745,218 @@ loadSrc(src);
     }
   };
 
+  const renderSettingsContent = () => (
+    <>
+      {/* ── MAIN MENU ── */}
+      {activeMenu === 'main' && (
+        <View style={{ marginTop: 4, gap: 2 }}>
+          {/* Dub toggle */}
+          <TouchableOpacity style={S.settingsRow} onPress={toggleDub} activeOpacity={0.7}>
+            <Ionicons name="mic-outline" size={20} color="#9ca3af" />
+            <Text style={S.settingsRowText}>Dub</Text>
+            <View style={{ flex: 1 }} />
+            <View style={[S.toggleTrack, activeType === 'dub' && S.toggleTrackOn]}>
+              <View style={[S.toggleThumb, activeType === 'dub' && S.toggleThumbOn]} />
+            </View>
+          </TouchableOpacity>
+          {/* Audio */}
+          <View style={S.settingsRow}>
+            <Ionicons name="musical-notes-outline" size={20} color="#9ca3af" />
+            <Text style={S.settingsRowText}>Audio</Text>
+            <View style={{ flex: 1 }} />
+            <Text style={S.settingsRowValue}>Original</Text>
+          </View>
+          {/* Speed */}
+          <TouchableOpacity style={S.settingsRow} onPress={() => setActiveMenu('speed')} activeOpacity={0.7}>
+            <Ionicons name="speedometer-outline" size={20} color="#9ca3af" />
+            <Text style={S.settingsRowText}>Playback speed</Text>
+            <View style={{ flex: 1 }} />
+            <Text style={S.settingsRowValue}>{playbackSpeed === 1 ? 'Normal' : `${playbackSpeed}x`}</Text>
+            <Ionicons name="chevron-forward" size={16} color="#6b7280" style={{ marginLeft: 4 }} />
+          </TouchableOpacity>
+          {/* Subtitles */}
+          <TouchableOpacity style={S.settingsRow} onPress={() => setActiveMenu('subtitles')} activeOpacity={0.7}>
+            <Ionicons name="chatbox-ellipses-outline" size={20} color="#9ca3af" />
+            <Text style={S.settingsRowText}>Subtitles/CC</Text>
+            <View style={{ flex: 1 }} />
+            <Text style={S.settingsRowValue}>{subtitlesEnabled ? selectedSubtitleLabel : 'Off'}</Text>
+            <Ionicons name="chevron-forward" size={16} color="#6b7280" style={{ marginLeft: 4 }} />
+          </TouchableOpacity>
+          {/* Quality */}
+          <TouchableOpacity style={S.settingsRow} onPress={() => setActiveMenu('quality')} activeOpacity={0.7}>
+            <Ionicons name="videocam-outline" size={20} color="#9ca3af" />
+            <Text style={S.settingsRowText}>Quality</Text>
+            <View style={{ flex: 1 }} />
+            <Text style={S.settingsRowValue}>
+              {(() => {
+                const sq = qualityLevels.find(q => q.index === currentQuality);
+                return sq ? (sq.height === 'Auto' ? 'Auto' : `${sq.height}p`) : 'Auto';
+              })()}
+            </Text>
+            <Ionicons name="chevron-forward" size={16} color="#6b7280" style={{ marginLeft: 4 }} />
+          </TouchableOpacity>
+          {/* Server */}
+          <TouchableOpacity style={S.settingsRow} onPress={() => setActiveMenu('server')} activeOpacity={0.7}>
+            <Ionicons name="desktop-outline" size={20} color="#9ca3af" />
+            <Text style={S.settingsRowText}>Server</Text>
+            <View style={{ flex: 1 }} />
+            <Text style={S.settingsRowValue}>{currentServer || 'Default'}</Text>
+            <Ionicons name="chevron-forward" size={16} color="#6b7280" style={{ marginLeft: 4 }} />
+          </TouchableOpacity>
+          {/* More */}
+          <TouchableOpacity style={S.settingsRow} onPress={() => setActiveMenu('more')} activeOpacity={0.7}>
+            <Ionicons name="options-outline" size={20} color="#9ca3af" />
+            <Text style={S.settingsRowText}>More</Text>
+            <View style={{ flex: 1 }} />
+            <Ionicons name="chevron-forward" size={16} color="#6b7280" style={{ marginLeft: 4 }} />
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* ── SPEED SUBMENU ── */}
+      {activeMenu === 'speed' && (
+        <View style={{ paddingTop: 4 }}>
+          {[0.5, 0.75, 1, 1.25, 1.5, 2].map(s => (
+            <TouchableOpacity key={s} style={S.settingsRow} onPress={() => handleSpeedChange(s)} activeOpacity={0.7}>
+              <View style={{ width: 28 }} />
+              <Text style={S.settingsRowText}>{s === 1 ? 'Normal' : `${s}x`}</Text>
+              <View style={{ flex: 1 }} />
+              {playbackSpeed === s && <Ionicons name="checkmark" size={20} color="#fff" />}
+            </TouchableOpacity>
+          ))}
+        </View>
+      )}
+
+      {/* ── QUALITY SUBMENU ── */}
+      {activeMenu === 'quality' && (
+        <View style={{ paddingTop: 4 }}>
+          {qualityLevels.map(q => {
+            const isSelected = currentQuality === q.index;
+            const isDefault = prefs.defaultQuality && String(q.height) === String(prefs.defaultQuality);
+            return (
+              <TouchableOpacity key={q.index} style={S.settingsRow} onPress={() => handleQualityChange(q)} activeOpacity={0.7}>
+                <View style={{ width: 28 }} />
+                <Text style={S.settingsRowText}>
+                  {q.height === 'Auto' ? 'Auto' : `${q.height}p`}
+                  {isDefault && <Text style={{ color: '#6b7280', fontSize: 12 }}> (Default)</Text>}
+                </Text>
+                <View style={{ flex: 1 }} />
+                {isSelected && <Ionicons name="checkmark" size={20} color="#fff" />}
+              </TouchableOpacity>
+            );
+          })}
+          {qualityLevels.length <= 1 && (
+            <View style={{ paddingHorizontal: 16, paddingBottom: 12, alignItems: 'center' }}>
+              <Text style={{ color: '#6b7280', fontSize: 12 }}>Additional quality levels load once the stream starts.</Text>
+            </View>
+          )}
+        </View>
+      )}
+
+      {/* ── SUBTITLES SUBMENU ── */}
+      {activeMenu === 'subtitles' && (
+        <View style={{ paddingTop: 4 }}>
+          <TouchableOpacity style={S.settingsRow} onPress={() => toggleSubtitles(false)}>
+            <View style={{ width: 28 }} />
+            <Text style={S.settingsRowText}>Off</Text>
+            <View style={{ flex: 1 }} />
+            {!subtitlesEnabled && <Ionicons name="checkmark" size={20} color="#fff" />}
+          </TouchableOpacity>
+          {availableSubtitles.map((sub, idx) => {
+            const isSelected = subtitlesEnabled && selectedSubtitleLabel === sub.label;
+            return (
+              <TouchableOpacity key={`${sub.label}-${idx}`} style={S.settingsRow} onPress={() => toggleSubtitles(true, sub.label)}>
+                <View style={{ width: 28 }} />
+                <Text style={S.settingsRowText}>{sub.label}</Text>
+                <View style={{ flex: 1 }} />
+                {isSelected && <Ionicons name="checkmark" size={20} color="#fff" />}
+              </TouchableOpacity>
+            );
+          })}
+        </View>
+      )}
+
+      {/* ── SERVER SUBMENU ── */}
+      {activeMenu === 'server' && (
+        <View style={{ paddingTop: 4 }}>
+          {streamData?.sources
+            ?.filter((s, i, arr) => arr.findIndex(x => x.server === s.server && x.type === s.type) === i)
+            ?.map(server => {
+              const isSelected = currentServer === server.server && activeType === (server.type === 'dub' ? 'dub' : 'sub');
+              return (
+                <TouchableOpacity key={`${server.server}-${server.type}`} style={S.settingsRow} onPress={() => handleServerChange(server.server, server.type)} activeOpacity={0.7}>
+                  <View style={{ width: 28 }} />
+                  <Text style={S.settingsRowText}>
+                    {server.server} <Text style={{ color: '#6b7280', fontSize: 13, fontWeight: '500' }}>({server.type.toUpperCase()})</Text>
+                  </Text>
+                  <View style={{ flex: 1 }} />
+                  {isSelected && <Ionicons name="checkmark" size={20} color="#fff" />}
+                </TouchableOpacity>
+              );
+            }) || (
+              <View style={{ padding: 20, alignItems: 'center' }}>
+                <Text style={{ color: '#6b7280', fontSize: 13 }}>No servers available</Text>
+              </View>
+            )
+          }
+        </View>
+      )}
+
+      {/* ── MORE SUBMENU ── */}
+      {activeMenu === 'more' && (
+        <View style={{ paddingTop: 4 }}>
+          {[
+            { key: 'autoPlay', label: 'Auto Play', icon: 'play-circle-outline' },
+            { key: 'autoNext', label: 'Auto Next', icon: 'play-forward-outline' },
+            { key: 'autoSkip', label: 'Auto Skip', icon: 'play-skip-forward-outline' },
+            { key: 'ambientMode', label: 'Ambient mode', icon: 'color-palette-outline' },
+            { key: 'miniplayer', label: 'Miniplayer', icon: 'albums-outline' },
+          ].map(opt => (
+            <TouchableOpacity key={opt.key} style={S.settingsRow} onPress={() => updatePrefs({ [opt.key]: !prefs[opt.key] })} activeOpacity={0.7}>
+              <Ionicons name={opt.icon} size={20} color="#9ca3af" />
+              <Text style={[S.settingsRowText, { color: '#e5e7eb', fontSize: 15, fontWeight: '500', marginLeft: 12 }]}>{opt.label}</Text>
+              <View style={{ flex: 1 }} />
+              <Switch
+                value={prefs[opt.key]}
+                onValueChange={() => updatePrefs({ [opt.key]: !prefs[opt.key] })}
+                trackColor={{ false: '#333', true: '#22c55e' }}
+                thumbColor={prefs[opt.key] ? '#fff' : '#999'}
+              />
+            </TouchableOpacity>
+          ))}
+          {/* Audio Boost slider */}
+          <View style={{ paddingHorizontal: 12, paddingVertical: 12 }}>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 }}>
+              <Text style={{ color: '#e5e7eb', fontSize: 15, fontWeight: '500' }}>Audio Boost</Text>
+              <Text style={{ color: '#e5e7eb', fontSize: 15 }}>{prefs.audioBoost}%</Text>
+            </View>
+            <View
+              style={{ height: 32, justifyContent: 'center' }}
+              onStartShouldSetResponder={() => true}
+              onResponderMove={(e) => {
+                const w = (isFullscreen ? 380 : windowWidth) - 40;
+                let pct = e.nativeEvent.locationX / w;
+                pct = Math.max(0, Math.min(1, pct));
+                updatePrefs({ audioBoost: Math.round(pct * 200) });
+              }}
+              onResponderRelease={(e) => {
+                const w = (isFullscreen ? 380 : windowWidth) - 40;
+                let pct = e.nativeEvent.locationX / w;
+                pct = Math.max(0, Math.min(1, pct));
+                updatePrefs({ audioBoost: Math.round(pct * 200) });
+              }}
+            >
+              <View style={{ height: 4, backgroundColor: '#333', borderRadius: 2, pointerEvents: 'none' }}>
+                <View style={{ height: 4, width: `${Math.min(100, Math.max(0, (prefs.audioBoost || 100) / 2))}%`, backgroundColor: '#fff', borderRadius: 2 }} />
+                <View style={{ position: 'absolute', width: 16, height: 16, borderRadius: 8, backgroundColor: '#fff', left: `${Math.min(100, Math.max(0, (prefs.audioBoost || 100) / 2))}%`, marginLeft: -8, marginTop: -6 }} />
+              </View>
+            </View>
+          </View>
+        </View>
+      )}
+    </>
+  );
+
   return (
     <Animated.View
       style={[
@@ -1571,331 +1974,389 @@ loadSrc(src);
       <View style={[
         S.videoOuter,
         isFullscreen && { width: '100%', height: '100%', position: 'absolute', top: 0, left: 0, bottom: 0, right: 0, zIndex: 1000 },
-        prefs.ambientMode && !isInPip && { shadowColor: '#fff', shadowOpacity: 0.15, shadowRadius: 40, elevation: 30 },
+        prefs.ambientMode && !isInPip && { shadowColor: '#fff', shadowOpacity: 0.15, shadowRadius: 30, elevation: 15 },
         // When in native PiP, expand the video to fill the entire window (OS clips it)
         isInPip && { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, width: '100%', height: '100%', zIndex: 9999 },
       ]}>
-        {isStreamLoading ? (
-          <View style={S.videoInner}>
-            <ActivityIndicator size="large" color="#fff" />
-            <Text style={{ color: '#6b7280', fontSize: 12, marginTop: 12 }}>Loading stream...</Text>
-          </View>
-        ) : streamUrl ? (
-          <View style={{ flex: 1 }}>
-            <WebView
-              ref={webviewRef}
-              source={streamUrl}
-              style={{ flex: 1, backgroundColor: '#000' }}
-              allowsFullscreenVideo
-              allowsInlineMediaPlayback
-              mediaPlaybackRequiresUserAction={false}
-              onLoadEnd={() => setIsVideoLoading(false)}
-              injectedJavaScript={`
-                (function() {
-                  // Handle messages from React Native -> WebView
-                  var _rnwListener = function(event) {
-                    try {
-                      var msg = JSON.parse(event.data);
-                      var video = document.querySelector('video');
-                      if (!video) return;
-                      if (msg.type === 'setSpeed') {
-                        video.playbackRate = msg.value;
-                      }
-                    } catch(e) {}
-                  };
-                  window.addEventListener('message', _rnwListener);
-                  document.addEventListener('message', _rnwListener);
+        {/* Animated Inner Video Layer — ONLY the video translates up & down */}
+        <Animated.View style={[StyleSheet.absoluteFill, { overflow: 'hidden', backgroundColor: '#000', transform: [{ translateY: streamTranslateY }] }]}>
+          {streamUrl ? (
+            <View style={{ flex: 1, backgroundColor: '#000' }}>
+              <WebView
+                ref={webviewRef}
+                source={streamUrl}
+                style={{ flex: 1, backgroundColor: '#000' }}
+                allowsFullscreenVideo
+                allowsInlineMediaPlayback
+                mediaPlaybackRequiresUserAction={false}
+                onLoadEnd={() => setIsVideoLoading(false)}
+                injectedJavaScript={`
+                  (function() {
+                    // Handle messages from React Native -> WebView
+                    var _rnwListener = function(event) {
+                      try {
+                        var msg = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
+                        if (!msg) return;
+                        var video = document.getElementById('vid') || document.querySelector('video');
+                        if (!video) return;
+                        if (msg.type === 'setSpeed') {
+                          video.playbackRate = msg.value;
+                        } else if (msg.type === 'seek') {
+                          video.currentTime = msg.value;
+                        } else if (msg.type === 'play') {
+                          video.play().catch(function(){});
+                        } else if (msg.type === 'pause') {
+                          video.pause();
+                        }
+                      } catch(e) {}
+                    };
+                    window.addEventListener('message', _rnwListener);
+                    document.addEventListener('message', _rnwListener);
 
-                  if ('mediaSession' in navigator) {
-                    try {
-                      navigator.mediaSession.metadata = new MediaMetadata({
-                        title: 'Kaizoku Stream',
-                        artist: 'Kaizoku'
-                      });
-                      navigator.mediaSession.setActionHandler('play', function() {
-                        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'mediaSessionPlay' }));
-                      });
-                      navigator.mediaSession.setActionHandler('pause', function() {
-                        window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'mediaSessionPause' }));
-                      });
-                    } catch(e) {}
-                  }
-                })();
-                true;
-              `}
-              javaScriptEnabled
-              originWhitelist={['*']}
-              mixedContentMode="always"
-              onMessage={(e) => {
-                try {
-                  const msg = JSON.parse(e.nativeEvent.data);
-                  if (msg.type === 'openSettings') {
-                    setActiveMenu('main');
-                    setIsSettingsOpen(true);
-                  } else if (msg.type === 'goBack') {
-                    if (isFullscreenRef.current) {
-                      toggleFullscreenState(false);
-                    } else {
-                      close();
+                    if ('mediaSession' in navigator) {
+                      try {
+                        navigator.mediaSession.metadata = new MediaMetadata({
+                          title: 'Kaizoku Stream',
+                          artist: 'Kaizoku'
+                        });
+                        navigator.mediaSession.setActionHandler('play', function() {
+                          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'mediaSessionPlay' }));
+                        });
+                        navigator.mediaSession.setActionHandler('pause', function() {
+                          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'mediaSessionPause' }));
+                        });
+                      } catch(e) {}
                     }
-                  } else if (msg.type === 'toggleFullscreen') {
-                    toggleFullscreenState();
-                  } else if (msg.type === 'ended') {
-                    if (prefs.autoNext && currentEpIdx + 1 < episodes.length) {
-                      changeEpisode(currentEpIdx + 1);
-                    }
-                    toggleFullscreenState();
-                  } else if (msg.type === 'nextEpisode') {
-                    if (currentEpIdx + 1 < episodes.length) {
-                      changeEpisode(currentEpIdx + 1);
-                    }
-                  } else if (msg.type === 'prevEpisode') {
-                    if (currentEpIdx > 0) {
-                      changeEpisode(currentEpIdx - 1);
-                    }
-                  } else if (msg.type === 'playbackState') {
-                    setIsPlaying(msg.payload.playing);
-                    isPlayingRef.current = msg.payload.playing;
-                    if (msg.payload.playing && isControlsVisible) showControls();
-                  } else if (msg.type === 'buffering') {
-                    setIsBuffering(msg.payload);
-                  } else if (msg.type === 'loaded') {
-                    setDuration(msg.payload.duration);
-                    durationRef.current = msg.payload.duration;
-                    setIsVideoLoading(false);
-                    showControls();
-                  } else if (msg.type === 'timeUpdate' && msg.payload) {
-                    if (!isScrubbingRef.current) {
-                      setCurrentTime(msg.payload.time);
-                    }
-                    if (msg.payload.duration) {
+                  })();
+                  true;
+                `}
+                javaScriptEnabled
+                originWhitelist={['*']}
+                mixedContentMode="always"
+                onMessage={(e) => {
+                  try {
+                    const msg = JSON.parse(e.nativeEvent.data);
+                    if (msg.type === 'openSettings') {
+                      setActiveMenu('main');
+                      setIsSettingsOpen(true);
+                    } else if (msg.type === 'goBack') {
+                      if (isFullscreenRef.current) {
+                        toggleFullscreenState(false);
+                      } else {
+                        close();
+                      }
+                    } else if (msg.type === 'toggleFullscreen') {
+                      toggleFullscreenState();
+                    } else if (msg.type === 'ended') {
+                      if (prefs.autoNext && currentEpIdx + 1 < episodes.length) {
+                        changeEpisode(currentEpIdx + 1);
+                      }
+                      // Keep orientation unchanged when episode ends
+                    } else if (msg.type === 'nextEpisode') {
+                      if (currentEpIdx + 1 < episodes.length) {
+                        changeEpisode(currentEpIdx + 1);
+                      }
+                    } else if (msg.type === 'prevEpisode') {
+                      if (currentEpIdx > 0) {
+                        changeEpisode(currentEpIdx - 1);
+                      }
+                    } else if (msg.type === 'playbackState') {
+                      setIsPlaying(msg.payload.playing);
+                      isPlayingRef.current = msg.payload.playing;
+                      if (!msg.payload.playing) {
+                        saveCurrentProgress();
+                      } else if (isControlsVisible) {
+                        showControls();
+                      }
+                    } else if (msg.type === 'buffering') {
+                      setIsBuffering(msg.payload);
+                    } else if (msg.type === 'loaded') {
                       setDuration(msg.payload.duration);
                       durationRef.current = msg.payload.duration;
-                    }
-                    if (msg.payload.buffered !== undefined) setBufferedTime(msg.payload.buffered);
-                    setShowSkip(msg.payload.showSkip);
-                    setSkipTarget(msg.payload.skipTarget);
-                    setSkipText(msg.payload.skipText);
-
-                    if (prefs.autoSkip && msg.payload.showSkip && msg.payload.skipTarget > 0 && lastSkippedTargetRef.current !== msg.payload.skipTarget) {
-                      lastSkippedTargetRef.current = msg.payload.skipTarget;
-                      webviewRef.current.postMessage(JSON.stringify({ type: 'seek', value: msg.payload.skipTarget }));
-                      setShowSkip(false);
-                    }
-
-                    progressRef.current = { time: msg.payload.time, duration: msg.payload.duration };
-                    const now = Date.now();
-                    if (!progressRef.current._lastSave || now - progressRef.current._lastSave > 15000) {
-                      progressRef.current._lastSave = now;
-                      updateProgress({ animeId, episodeIndex: currentEpIdx, progress: msg.payload.time, duration: msg.payload.duration });
-                    }
-                  } else if (msg.type === 'error') {
-                    setIsVideoLoading(false);
-                    setIsStreamLoading(false);
-                    setStreamUrl(null); // Force error state
-                  } else if (msg.type === 'controlsVisibility') {
-                    setIsControlsVisible(msg.payload);
-                  } else if (msg.type === 'mediaSessionPlay') {
-                    togglePlayPause(true);
-                  } else if (msg.type === 'mediaSessionPause') {
-                    togglePlayPause(false);
-                  } else if (msg.type === 'qualities') {
-                    const rawLevels = Array.isArray(msg.payload) ? msg.payload : (msg.payload?.levels || []);
-                    const seen = new Set();
-                    const filtered = [];
-
-                    rawLevels.forEach((l, idx) => {
-                      let h = l.height || 0;
-                      // Fallback if HLS assigns same height to multiple levels due to fake bitrates
-                      if (seen.has(h)) {
-                        const stds = [1080, 720, 480, 360, 240];
-                        h = stds[idx] || (h - 1);
-                        while (seen.has(h)) h -= 1;
+                      setIsVideoLoading(false);
+                      showControls();
+                    } else if (msg.type === 'timeUpdate' && msg.payload) {
+                      if (!isScrubbingRef.current && (Date.now() - lastSeekTimeRef.current >= 800)) {
+                        setCurrentTime(msg.payload.time);
                       }
-                      seen.add(h);
-                      filtered.push({ ...l, height: h });
-                    });
+                      if (msg.payload.duration) {
+                        setDuration(msg.payload.duration);
+                        durationRef.current = msg.payload.duration;
+                      }
+                      if (msg.payload.buffered !== undefined) setBufferedTime(msg.payload.buffered);
+                      setShowSkip(msg.payload.showSkip);
+                      setSkipTarget(msg.payload.skipTarget);
+                      setSkipText(msg.payload.skipText);
 
-                    // If HLS provided only 1 level, but server provided multiple quality URLs in allSources
-                    if (filtered.length <= 1 && chosenAllSourcesRef.current?.length > 1) {
-                      chosenAllSourcesRef.current.forEach((s, i) => {
-                        const match = (s.label || '').match(/(\d{3,4})/);
-                        const h = match ? parseInt(match[1], 10) : (1080 - i * 240);
-                        if (!seen.has(h)) {
-                          seen.add(h);
-                          filtered.push({ height: h, index: i, fileUrl: s.file });
+                      if (prefs.autoSkip && msg.payload.showSkip && msg.payload.skipTarget > 0 && lastSkippedTargetRef.current !== msg.payload.skipTarget) {
+                        lastSkippedTargetRef.current = msg.payload.skipTarget;
+                        webviewRef.current.postMessage(JSON.stringify({ type: 'seek', value: msg.payload.skipTarget }));
+                        setShowSkip(false);
+                      }
+
+                      progressRef.current = { time: msg.payload.time, duration: msg.payload.duration };
+                      const now = Date.now();
+                      if (!progressRef.current._lastSave || now - progressRef.current._lastSave > 15000) {
+                        progressRef.current._lastSave = now;
+                        saveCurrentProgress(msg.payload.time, msg.payload.duration);
+                      }
+                    } else if (msg.type === 'error') {
+                      setIsVideoLoading(false);
+                      setIsStreamLoading(false);
+                      setStreamUrl(null); // Force error state
+                    } else if (msg.type === 'controlsVisibility') {
+                      setIsControlsVisible(msg.payload);
+                    } else if (msg.type === 'mediaSessionPlay') {
+                      togglePlayPause(true);
+                    } else if (msg.type === 'mediaSessionPause') {
+                      togglePlayPause(false);
+                    } else if (msg.type === 'qualities') {
+                      const rawLevels = Array.isArray(msg.payload) ? msg.payload : (msg.payload?.levels || []);
+                      const seen = new Set();
+                      const filtered = [];
+
+                      rawLevels.forEach((l, idx) => {
+                        let h = l.height || 0;
+                        // Fallback if HLS assigns same height to multiple levels due to fake bitrates
+                        if (seen.has(h)) {
+                          const stds = [1080, 720, 480, 360, 240];
+                          h = stds[idx] || (h - 1);
+                          while (seen.has(h)) h -= 1;
                         }
+                        seen.add(h);
+                        filtered.push({ ...l, height: h });
                       });
-                    }
 
-                    filtered.sort((a, b) => (b.height || 0) - (a.height || 0));
-                    const levels = [{ height: 'Auto', index: -1 }, ...filtered];
+                      // If HLS provided only 1 level, but server provided multiple quality URLs in allSources
+                      if (filtered.length <= 1 && chosenAllSourcesRef.current?.length > 1) {
+                        chosenAllSourcesRef.current.forEach((s, i) => {
+                          const match = (s.label || '').match(/(\d{3,4})/);
+                          const h = match ? parseInt(match[1], 10) : (1080 - i * 240);
+                          if (!seen.has(h)) {
+                            seen.add(h);
+                            filtered.push({ height: h, index: i, fileUrl: s.file });
+                          }
+                        });
+                      }
 
-                    // Only update qualityLevels if new list has MORE or EQUAL levels
-                    // (prevents HLS level-locking from wiping out the parsed list)
-                    setQualityLevels(prev => (levels.length >= prev.length ? levels : prev));
+                      filtered.sort((a, b) => (b.height || 0) - (a.height || 0));
+                      const levels = [{ height: 'Auto', index: -1 }, ...filtered];
 
-                    if (prefs.defaultQuality) {
-                      const target = levels.find(l => String(l.height) === String(prefs.defaultQuality));
-                      if (target) {
-                        setCurrentQuality(target.index);
-                        // Do not postMessage setQuality here as it triggers HLS.js level-locking
+                      // Only update qualityLevels if new list has MORE or EQUAL levels
+                      // (prevents HLS level-locking from wiping out the parsed list)
+                      setQualityLevels(prev => (levels.length >= prev.length ? levels : prev));
+
+                      if (prefs.defaultQuality) {
+                        const target = levels.find(l => String(l.height) === String(prefs.defaultQuality));
+                        if (target) {
+                          setCurrentQuality(target.index);
+                          // Do not postMessage setQuality here as it triggers HLS.js level-locking
+                        }
                       }
                     }
-                  }
-                } catch (_) { }
-              }}
-            />
+                  } catch (_) { }
+                }}
+              />
+            </View>
+          ) : null}
 
-            {/* Miniplayer Controls */}
-            {isMinimized && (
-              <View style={[StyleSheet.absoluteFill, { backgroundColor: 'transparent', zIndex: 20, elevation: 20 }]}>
-                <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => {
-                  LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-                  maximize();
-                }} />
-                <TouchableOpacity style={{ position: 'absolute', top: 6, right: 6, padding: 6, backgroundColor: 'rgba(0,0,0,0.7)', borderRadius: 12 }} onPress={close}>
-                  <Ionicons name="close" size={16} color="#fff" />
-                </TouchableOpacity>
-                <TouchableOpacity style={{ position: 'absolute', bottom: 6, right: 6, padding: 6, backgroundColor: 'rgba(0,0,0,0.7)', borderRadius: 12 }} onPress={togglePlayPause}>
-                  <Ionicons name={isPlaying ? "pause" : "play"} size={16} color="#fff" style={{ marginLeft: isPlaying ? 0 : 2 }} />
-                </TouchableOpacity>
-              </View>
-            )}
+          {!isStreamLoading && !streamUrl && !isVideoLoading && (
+            <View style={S.videoInner}>
+              <Ionicons name="videocam-off-outline" size={32} color="#4b5563" style={{ marginBottom: 12 }} />
+              <Text style={{ color: '#6b7280', fontSize: 14 }}>Stream not available for {playingTitle}</Text>
+            </View>
+          )}
+        </Animated.View>
 
-            {/* Gesture Layer */}
-            {!isInPip && !isMinimized && (
-              <View style={[StyleSheet.absoluteFill, { zIndex: 5, backgroundColor: 'rgba(0,0,0,0.01)' }]} {...panResponder.panHandlers} />
-            )}
+        {/* Miniplayer Controls (Stationary) */}
+        {isMinimized && (
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: 'transparent', zIndex: 20, elevation: 20 }]}>
+            <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => {
+              LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+              maximize();
+            }} />
+            <TouchableOpacity style={{ position: 'absolute', top: 6, right: 6, padding: 6, backgroundColor: 'rgba(0,0,0,0.7)', borderRadius: 12 }} onPress={close}>
+              <Ionicons name="close" size={16} color="#fff" />
+            </TouchableOpacity>
+            <TouchableOpacity style={{ position: 'absolute', bottom: 6, right: 6, padding: 6, backgroundColor: 'rgba(0,0,0,0.7)', borderRadius: 12 }} onPress={togglePlayPause}>
+              <Ionicons name={isPlaying ? "pause" : "play"} size={16} color="#fff" style={{ marginLeft: isPlaying ? 0 : 2 }} />
+            </TouchableOpacity>
+          </View>
+        )}
 
-            {/* UI Layer */}
-            {!isInPip && !isMinimized && (
-              <Animated.View
-                pointerEvents={isControlsVisible ? 'auto' : 'none'}
-                style={[StyleSheet.absoluteFill, { zIndex: 10, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'space-between', opacity: controlsOpacity }]}
-                {...panResponder.panHandlers}
-              >
+        {/* Gesture Layer (Stationary) */}
+        {!isInPip && !isMinimized && (
+          <View style={[StyleSheet.absoluteFill, { zIndex: 5, backgroundColor: 'rgba(0,0,0,0.01)' }]} {...panResponder.panHandlers} />
+        )}
 
-                {/* Modern Top Bar */}
-                <LinearGradient colors={['rgba(0,0,0,0.7)', 'transparent']} style={[S.nativeTopBar, { paddingTop: isFullscreen ? Math.max(insets.top, 16) : 10, paddingLeft: Math.max(insets.left, 8), paddingRight: Math.max(insets.right, 8) }]} pointerEvents="box-none">
-                  <TouchableOpacity onPress={handleBackPress} style={S.blurBtn}>
-                    <Ionicons name="chevron-down" size={28} color="#fff" />
-                  </TouchableOpacity>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                    <TouchableOpacity style={S.blurBtn} onPress={() => toggleSubtitles(!subtitlesEnabled)}>
-                      {subtitlesEnabled ? (
-                        <View style={{ backgroundColor: '#fff', borderRadius: 3, paddingHorizontal: 4, paddingVertical: 1.5, justifyContent: 'center', alignItems: 'center' }}>
-                          <Text style={{ color: '#000', fontSize: 10, fontWeight: '900', letterSpacing: 0.5 }}>CC</Text>
-                        </View>
-                      ) : (
-                        <View style={{ borderWidth: 1.5, borderColor: '#fff', borderRadius: 3, paddingHorizontal: 4, paddingVertical: 1.5, justifyContent: 'center', alignItems: 'center', opacity: 0.6 }}>
-                          <Text style={{ color: '#fff', fontSize: 10, fontWeight: '900', letterSpacing: 0.5 }}>CC</Text>
-                        </View>
-                      )}
-                    </TouchableOpacity>
-                    <TouchableOpacity onPress={() => { setActiveMenu('main'); setIsSettingsOpen(true); }} style={S.blurBtn}>
-                      <Ionicons name="settings-outline" size={24} color="#fff" />
-                    </TouchableOpacity>
-                  </View>
-                </LinearGradient>
+        {/* UI Layer (Stationary) */}
+        {!isInPip && !isMinimized && (
+          <Animated.View
+            pointerEvents={isControlsVisible ? 'auto' : 'none'}
+            style={[StyleSheet.absoluteFill, { zIndex: 10, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'space-between', opacity: controlsOpacity }]}
+          >
+            {/* Background tap to hide/dismiss controls */}
+            <TouchableWithoutFeedback onPress={hideControls}>
+              <View style={StyleSheet.absoluteFill} />
+            </TouchableWithoutFeedback>
 
-                {/* Massive Center Controls */}
-                <View style={[StyleSheet.absoluteFill, { alignItems: 'center', justifyContent: 'center' }]} pointerEvents="box-none">
-                  {isBuffering ? (
-                    <ActivityIndicator size={60} color="#FF0000" />
+            {/* Modern Top Bar */}
+            <LinearGradient colors={['rgba(0,0,0,0.7)', 'transparent']} style={[S.nativeTopBar, { paddingTop: isFullscreen ? Math.max(insets.top, 16) : 10, paddingLeft: Math.max(insets.left, 8), paddingRight: Math.max(insets.right, 8) }]} pointerEvents="box-none">
+              <TouchableOpacity onPress={handleBackPress} style={S.blurBtn}>
+                <Ionicons name="chevron-down" size={28} color="#fff" />
+              </TouchableOpacity>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <TouchableOpacity style={S.blurBtn} onPress={() => toggleSubtitles(!subtitlesEnabled)}>
+                  {subtitlesEnabled ? (
+                    <View style={{ backgroundColor: '#fff', borderRadius: 3, paddingHorizontal: 4, paddingVertical: 1.5, justifyContent: 'center', alignItems: 'center' }}>
+                      <Text style={{ color: '#000', fontSize: 10, fontWeight: '900', letterSpacing: 0.5 }}>CC</Text>
+                    </View>
                   ) : (
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: isFullscreen ? 60 : 36 }}>
-                      <TouchableOpacity onPress={() => currentEpIdx > 0 && changeEpisode(currentEpIdx - 1)} style={{ padding: 10 }} disabled={currentEpIdx === 0}>
-                        <Ionicons name="play-skip-back" size={isFullscreen ? 36 : 26} color="#fff" style={{ opacity: currentEpIdx > 0 ? 1 : 0.4 }} />
-                      </TouchableOpacity>
-
-                      <TouchableOpacity onPress={togglePlayPause} activeOpacity={0.7} style={{ padding: 10 }}>
-                        <Ionicons name={isPlaying ? "pause" : "play"} size={isFullscreen ? 60 : 44} color="#fff" style={{ marginLeft: isPlaying ? 0 : (isFullscreen ? 4 : 3) }} />
-                      </TouchableOpacity>
-
-                      <TouchableOpacity onPress={() => currentEpIdx + 1 < (episodes?.length || 0) && changeEpisode(currentEpIdx + 1)} style={{ padding: 10 }} disabled={currentEpIdx + 1 >= (episodes?.length || 0)}>
-                        <Ionicons name="play-skip-forward" size={isFullscreen ? 36 : 26} color="#fff" style={{ opacity: currentEpIdx + 1 < (episodes?.length || 0) ? 1 : 0.4 }} />
-                      </TouchableOpacity>
+                    <View style={{ borderWidth: 1.5, borderColor: '#fff', borderRadius: 3, paddingHorizontal: 4, paddingVertical: 1.5, justifyContent: 'center', alignItems: 'center', opacity: 0.6 }}>
+                      <Text style={{ color: '#fff', fontSize: 10, fontWeight: '900', letterSpacing: 0.5 }}>CC</Text>
                     </View>
                   )}
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => { setActiveMenu('main'); setIsSettingsOpen(true); }} style={S.blurBtn}>
+                  <Ionicons name="settings-outline" size={24} color="#fff" />
+                </TouchableOpacity>
+              </View>
+            </LinearGradient>
+
+            {/* Massive Center Controls / Player Loading Spinner */}
+            <View style={[StyleSheet.absoluteFill, { alignItems: 'center', justifyContent: 'center' }]} pointerEvents="box-none">
+              {(isStreamLoading || (!streamUrl && isVideoLoading) || isBuffering) ? (
+                <ActivityIndicator size={60} color="#FF0000" />
+              ) : (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: isFullscreen ? 60 : 36 }}>
+                  <TouchableOpacity onPress={() => currentEpIdx > 0 && changeEpisode(currentEpIdx - 1)} style={{ padding: 10 }} disabled={currentEpIdx === 0}>
+                    <Ionicons name="play-skip-back" size={isFullscreen ? 36 : 26} color="#fff" style={{ opacity: currentEpIdx > 0 ? 1 : 0.4 }} />
+                  </TouchableOpacity>
+
+                  <TouchableOpacity onPress={togglePlayPause} activeOpacity={0.7} style={{ padding: 10 }}>
+                    <Ionicons name={isPlaying ? "pause" : "play"} size={isFullscreen ? 60 : 44} color="#fff" style={{ marginLeft: isPlaying ? 0 : (isFullscreen ? 4 : 3) }} />
+                  </TouchableOpacity>
+
+                  <TouchableOpacity onPress={() => currentEpIdx + 1 < (episodes?.length || 0) && changeEpisode(currentEpIdx + 1)} style={{ padding: 10 }} disabled={currentEpIdx + 1 >= (episodes?.length || 0)}>
+                    <Ionicons name="play-skip-forward" size={isFullscreen ? 36 : 26} color="#fff" style={{ opacity: currentEpIdx + 1 < (episodes?.length || 0) ? 1 : 0.4 }} />
+                  </TouchableOpacity>
                 </View>
+              )}
+            </View>
 
-                {/* Full-width Bottom Controls */}
-                <View style={{ position: 'absolute', bottom: isFullscreen ? Math.max(insets.bottom, 24) : 0, left: 0, right: 0 }} pointerEvents="box-none">
-                  <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: Math.max(insets.left, 16), paddingRight: Math.max(insets.right, 16), paddingBottom: 10, zIndex: 10 }}>
-                    {/* YouTube Style Time Pill */}
-                    <View style={S.timePillContainer}>
-                      <Text style={S.timePillCurrent}>
-                        {formatTime(isScrubbing ? scrubTime : currentTime)}
-                      </Text>
-                      <Text style={S.timePillSep}> / </Text>
-                      <Text style={S.timePillDuration}>
-                        {formatTime(duration)}
-                      </Text>
-                    </View>
-
-                    <TouchableOpacity onPress={() => toggleFullscreenState()} style={{ padding: 4 }}>
-                      <Ionicons name={isFullscreen ? "contract" : "expand"} size={20} color="#fff" />
-                    </TouchableOpacity>
-                  </View>
-
-                  <View style={[S.nativeProgressBarContainer, { width: '100%', paddingLeft: isFullscreen ? Math.max(insets.left, 16) : 0, paddingRight: isFullscreen ? Math.max(insets.right, 16) : 0 }]} {...scrubPanResponder.panHandlers}>
-                    <View style={{ flex: 1 }} pointerEvents="none">
-                      <View style={S.nativeProgressTrack} />
-                      <View style={[S.nativeProgressBuffered, { width: `${duration > 0 ? Math.min(100, (bufferedTime / duration) * 100) : 0}%` }]} />
-
-                      {introData && duration > 0 && (
-                        <View style={{ position: 'absolute', bottom: 0, height: 2, backgroundColor: 'rgba(252, 165, 109, 0.6)', left: `${(introData.start / duration) * 100}%`, width: `${((introData.end - introData.start) / duration) * 100}%`, borderRadius: 2 }} />
-                      )}
-                      {outroData && duration > 0 && (
-                        <View style={{ position: 'absolute', bottom: 0, height: 2, backgroundColor: 'rgba(252, 165, 109, 0.6)', left: `${(outroData.start / duration) * 100}%`, width: `${((outroData.end - outroData.start) / duration) * 100}%`, borderRadius: 2 }} />
-                      )}
-
-                      <View style={[S.nativeProgressFill, { width: `${duration > 0 ? Math.min(100, ((isScrubbing ? scrubTime : currentTime) / duration) * 100) : 0}%` }]} />
-                      <View style={[S.nativeProgressDot, { left: `${duration > 0 ? Math.min(100, ((isScrubbing ? scrubTime : currentTime) / duration) * 100) : 0}%`, marginLeft: -6 }]} />
-                    </View>
-                  </View>
-                </View>
-              </Animated.View>
-            )}
-
-            {/* Skip Accumulator Overlay */}
-            {skipAccumulator !== 0 && (
-              <View style={[StyleSheet.absoluteFill, { zIndex: 20, pointerEvents: 'none', justifyContent: 'center', alignItems: skipAccumulator > 0 ? 'flex-end' : 'flex-start', paddingLeft: Math.max(insets.left, 60), paddingRight: Math.max(insets.right, 60) }]}>
-                <View style={{ backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 40, padding: 20, alignItems: 'center' }}>
-                  <Ionicons name={skipAccumulator > 0 ? 'play-forward' : 'play-back'} size={32} color="#fff" />
-                  <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700', marginTop: 8 }}>
-                    {skipAccumulator > 0 ? `+${skipAccumulator}s` : `${skipAccumulator}s`}
+            {/* Full-width Bottom Controls with Seek Bar touching bottom of player */}
+            <View style={{ position: 'absolute', bottom: isFullscreen ? Math.max(insets.bottom, 16) : 0, left: 0, right: 0, zIndex: 100 }} pointerEvents="box-none">
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: Math.max(insets.left, 16), paddingRight: Math.max(insets.right, 16), paddingBottom: 4, zIndex: 10 }}>
+                {/* YouTube Style Time Pill */}
+                <View style={S.timePillContainer}>
+                  <Text style={S.timePillCurrent}>
+                    {formatTime(isScrubbing ? scrubTime : currentTime)}
+                  </Text>
+                  <Text style={S.timePillSep}> / </Text>
+                  <Text style={S.timePillDuration}>
+                    {formatTime(duration)}
                   </Text>
                 </View>
-              </View>
-            )}
 
-            {/* Hold-to-2x Speed Overlay — small pill at top-center */}
-            {!isInPip && !isMinimized && isHoldingSpeed && (
-              <View style={[StyleSheet.absoluteFill, { zIndex: 25, pointerEvents: 'none', justifyContent: 'flex-start', alignItems: 'center', paddingTop: 16 }]}>
-                <View style={{ backgroundColor: 'rgba(0,0,0,0.75)', borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                  <Ionicons name="flash" size={12} color="#fbbf24" />
-                  <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>2×</Text>
+                <TouchableOpacity onPress={() => toggleFullscreenState()} style={{ padding: 6 }}>
+                  <Ionicons name={isFullscreen ? "contract" : "expand"} size={20} color="#fff" />
+                </TouchableOpacity>
+              </View>
+
+              {/* Dedicated high-hit-area Seek Bar */}
+              <View
+                ref={progressBarRef}
+                style={[
+                  S.nativeProgressBarContainer,
+                  {
+                    paddingLeft: isFullscreen ? Math.max(insets.left, 16) : 0,
+                    paddingRight: isFullscreen ? Math.max(insets.right, 16) : 0,
+                  }
+                ]}
+                onLayout={(e) => {
+                  const { width } = e.nativeEvent.layout;
+                  const safeLeft = isFullscreenRef.current ? Math.max(insetsRef.current?.left || 0, 16) : 0;
+                  const safeRight = isFullscreenRef.current ? Math.max(insetsRef.current?.right || 0, 16) : 0;
+                  const usableW = width - safeLeft - safeRight;
+                  if (usableW > 0) {
+                    setTrackWidth(usableW);
+                    progressBarLayout.current.width = usableW;
+                    progressBarLayout.current.x = safeLeft;
+                  }
+                  progressBarRef.current?.measure((x, y, w, h, pageX, pageY) => {
+                    if (w > 0) {
+                      progressBarLayout.current = {
+                        x: pageX + safeLeft,
+                        width: w - safeLeft - safeRight,
+                      };
+                    }
+                  });
+                }}
+                {...scrubPanResponder.panHandlers}
+              >
+                <View style={S.progressTrackWrapper} pointerEvents="none">
+                  {/* Background track */}
+                  <View style={S.nativeProgressTrack} />
+                  {/* Buffered fill */}
+                  <View style={[S.nativeProgressBuffered, { width: `${duration > 0 ? Math.min(100, (bufferedTime / duration) * 100) : 0}%` }]} />
+
+                  {/* Intro & Outro marks */}
+                  {introData && duration > 0 && (
+                    <View style={{ position: 'absolute', bottom: 0, height: isScrubbing ? 4 : 2.5, backgroundColor: 'rgba(252, 165, 109, 0.75)', left: `${(introData.start / duration) * 100}%`, width: `${((introData.end - introData.start) / duration) * 100}%`, borderRadius: 1.5 }} />
+                  )}
+                  {outroData && duration > 0 && (
+                    <View style={{ position: 'absolute', bottom: 0, height: isScrubbing ? 4 : 2.5, backgroundColor: 'rgba(252, 165, 109, 0.75)', left: `${(outroData.start / duration) * 100}%`, width: `${((outroData.end - outroData.start) / duration) * 100}%`, borderRadius: 1.5 }} />
+                  )}
+
+                  {/* Played fill */}
+                  <View style={[S.nativeProgressFill, { height: isScrubbing ? 4 : 2.5, width: `${duration > 0 ? Math.min(100, ((isScrubbing ? scrubTime : currentTime) / duration) * 100) : 0}%` }]} />
+                  {/* Red Dot with Animated Scale — 1 layer above everything */}
+                  <Animated.View
+                    style={[
+                      S.nativeProgressDot,
+                      {
+                        left: `${duration > 0 ? Math.min(100, ((isScrubbing ? scrubTime : currentTime) / duration) * 100) : 0}%`,
+                        marginLeft: -7,
+                        transform: [{ scale: scrubDotScale }],
+                      }
+                    ]}
+                  />
                 </View>
               </View>
-            )}
+            </View>
+          </Animated.View>
+        )}
 
-            {/* Skip Intro Button */}
-            {!isInPip && !isMinimized && showSkip && (
-              <TouchableOpacity style={[S.nativeSkipBtn, { bottom: Math.max(insets.bottom, isFullscreen ? 60 : 50), right: Math.max(insets.right, 20) }]} onPress={() => {
-                if (webviewRef.current) webviewRef.current.postMessage(JSON.stringify({ type: 'seek', value: skipTarget }));
-                setShowSkip(false);
-              }}>
-                <Text style={S.nativeSkipText}>{skipText}</Text>
-              </TouchableOpacity>
-            )}
+        {/* Skip Accumulator Overlay (Stationary) */}
+        {skipAccumulator !== 0 && (
+          <View style={[StyleSheet.absoluteFill, { zIndex: 20, pointerEvents: 'none', justifyContent: 'center', alignItems: skipAccumulator > 0 ? 'flex-end' : 'flex-start', paddingLeft: Math.max(insets.left, 60), paddingRight: Math.max(insets.right, 60) }]}>
+            <View style={{ backgroundColor: 'rgba(0,0,0,0.6)', borderRadius: 40, padding: 20, alignItems: 'center' }}>
+              <Ionicons name={skipAccumulator > 0 ? 'play-forward' : 'play-back'} size={32} color="#fff" />
+              <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700', marginTop: 8 }}>
+                {skipAccumulator > 0 ? `+${skipAccumulator}s` : `${skipAccumulator}s`}
+              </Text>
+            </View>
           </View>
-        ) : (
-          <View style={S.videoInner}>
-            <Ionicons name="videocam-off-outline" size={32} color="#4b5563" style={{ marginBottom: 12 }} />
-            <Text style={{ color: '#6b7280', fontSize: 14 }}>Stream not available for {playingTitle}</Text>
+        )}
+
+        {/* Hold-to-2x Speed Overlay (Stationary) */}
+        {!isInPip && !isMinimized && isHoldingSpeed && (
+          <View style={[StyleSheet.absoluteFill, { zIndex: 25, pointerEvents: 'none', justifyContent: 'flex-start', alignItems: 'center', paddingTop: 16 }]}>
+            <View style={{ backgroundColor: 'rgba(0,0,0,0.75)', borderRadius: 20, paddingHorizontal: 10, paddingVertical: 4, flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+              <Ionicons name="flash" size={12} color="#fbbf24" />
+              <Text style={{ color: '#fff', fontSize: 12, fontWeight: '700' }}>2×</Text>
+            </View>
           </View>
+        )}
+
+        {/* Skip Intro Button (Stationary) */}
+        {!isInPip && !isMinimized && showSkip && (
+          <TouchableOpacity style={[S.nativeSkipBtn, { bottom: Math.max(insets.bottom, isFullscreen ? 60 : 50), right: Math.max(insets.right, 20) }]} onPress={() => {
+            if (webviewRef.current) webviewRef.current.postMessage(JSON.stringify({ type: 'seek', value: skipTarget }));
+            setShowSkip(false);
+          }}>
+            <Text style={S.nativeSkipText}>{skipText}</Text>
+          </TouchableOpacity>
         )}
       </View>
 
@@ -2257,271 +2718,103 @@ loadSrc(src);
         )}
 
       {/* ── SETTINGS MODAL ─────────────────────────────────────────────────── */}
-      {
-        !isInPip && internalSettingsOpen && (
-          <View style={[StyleSheet.absoluteFill, { zIndex: 9999, justifyContent: 'flex-end', alignItems: isFullscreen ? 'center' : 'stretch' }]}>
-            <TouchableWithoutFeedback onPress={() => closeSettings()}>
-              <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.55)' }]} />
+      <Modal
+        visible={isSettingsOpen && !isInPip}
+        transparent
+        animationType={isFullscreen ? "fade" : "slide"}
+        onRequestClose={closeSettings}
+        statusBarTranslucent={true}
+      >
+        {isFullscreen ? (
+          /* Landscape / Horizontal Mode: Floating Center Modal Card */
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.75)', justifyContent: 'center', alignItems: 'center' }]}>
+            <TouchableWithoutFeedback onPress={closeSettings}>
+              <View style={StyleSheet.absoluteFill} />
             </TouchableWithoutFeedback>
-            <Animated.View {...settingsPanResponder.panHandlers} style={[S.settingsSheet, isFullscreen && { width: 450, borderRadius: 16, marginBottom: 20, maxHeight: '90%' }, { transform: [{ translateY: settingsSlideY }] }]}>
-              {/* Drag handle */}
-              <View style={S.settingsHandleWrap}><View style={S.settingsHandle} /></View>
+            <View
+              style={[
+                S.settingsLandscapeCard,
+                {
+                  width: Math.min(480, Math.max(340, (windowWidth > windowHeight ? windowWidth : windowHeight) - 64)),
+                  height: Math.min(300, Math.max(240, (windowWidth > windowHeight ? windowHeight : windowWidth) - 24)),
+                }
+              ]}
+            >
+              {/* Header */}
+              <View style={S.settingsLandscapeHeader}>
+                {activeMenu !== 'main' ? (
+                  <TouchableOpacity onPress={() => setActiveMenu('main')} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 4 }}>
+                    <Ionicons name="arrow-back" size={20} color="#fff" />
+                    <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700' }}>
+                      {activeMenu === 'speed' ? 'Playback speed' : activeMenu === 'quality' ? 'Quality' : activeMenu === 'subtitles' ? 'Subtitles/CC' : activeMenu === 'server' ? 'Server' : 'More'}
+                    </Text>
+                  </TouchableOpacity>
+                ) : (
+                  <Text style={{ color: '#fff', fontSize: 17, fontWeight: '700' }}>Settings</Text>
+                )}
+                <TouchableOpacity onPress={closeSettings} style={{ padding: 6, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.1)' }}>
+                  <Ionicons name="close" size={18} color="#fff" />
+                </TouchableOpacity>
+              </View>
+
+              {/* Body with smooth scrolling */}
               <ScrollView
-                style={{ flexShrink: 1, flexGrow: 1, width: '100%', maxHeight: '100%' }}
-                contentContainerStyle={{ paddingBottom: isFullscreen ? 40 : 20 }}
+                style={{ flex: 1, width: '100%' }}
+                contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 24 }}
                 showsVerticalScrollIndicator={true}
                 indicatorStyle="white"
-                bounces={false}
+                bounces={true}
                 nestedScrollEnabled={true}
-                onScroll={(e) => { settingsScrollY.current = e.nativeEvent.contentOffset.y; }}
-                scrollEventThrottle={16}
+                keyboardShouldPersistTaps="handled"
               >
-
-                {/* ── MAIN MENU ── */}
-                {activeMenu === 'main' && (
-                  <View style={{ marginTop: 4, gap: 2 }}>
-                    {/* Dub toggle */}
-                    <TouchableOpacity style={S.settingsRow} onPress={toggleDub} activeOpacity={0.7}>
-                      <Ionicons name="mic-outline" size={20} color="#9ca3af" />
-                      <Text style={S.settingsRowText}>Dub</Text>
-                      <View style={{ flex: 1 }} />
-                      <View style={[S.toggleTrack, activeType === 'dub' && S.toggleTrackOn]}>
-                        <View style={[S.toggleThumb, activeType === 'dub' && S.toggleThumbOn]} />
-                      </View>
-                    </TouchableOpacity>
-                    {/* Audio */}
-                    <View style={S.settingsRow}>
-                      <Ionicons name="musical-notes-outline" size={20} color="#9ca3af" />
-                      <Text style={S.settingsRowText}>Audio</Text>
-                      <View style={{ flex: 1 }} />
-                      <Text style={S.settingsRowValue}>Original</Text>
-                    </View>
-                    {/* Speed */}
-                    <TouchableOpacity style={S.settingsRow} onPress={() => setActiveMenu('speed')} activeOpacity={0.7}>
-                      <Ionicons name="speedometer-outline" size={20} color="#9ca3af" />
-                      <Text style={S.settingsRowText}>Playback speed</Text>
-                      <View style={{ flex: 1 }} />
-                      <Text style={S.settingsRowValue}>{playbackSpeed === 1 ? 'Normal' : `${playbackSpeed}x`}</Text>
-                      <Ionicons name="chevron-forward" size={16} color="#6b7280" style={{ marginLeft: 4 }} />
-                    </TouchableOpacity>
-                    {/* Subtitles */}
-                    <TouchableOpacity style={S.settingsRow} onPress={() => setActiveMenu('subtitles')} activeOpacity={0.7}>
-                      <Ionicons name="chatbox-ellipses-outline" size={20} color="#9ca3af" />
-                      <Text style={S.settingsRowText}>Subtitles/CC</Text>
-                      <View style={{ flex: 1 }} />
-                      <Text style={S.settingsRowValue}>{subtitlesEnabled ? selectedSubtitleLabel : 'Off'}</Text>
-                      <Ionicons name="chevron-forward" size={16} color="#6b7280" style={{ marginLeft: 4 }} />
-                    </TouchableOpacity>
-                    {/* Quality */}
-                    <TouchableOpacity style={S.settingsRow} onPress={() => setActiveMenu('quality')} activeOpacity={0.7}>
-                      <Ionicons name="videocam-outline" size={20} color="#9ca3af" />
-                      <Text style={S.settingsRowText}>Quality</Text>
-                      <View style={{ flex: 1 }} />
-                      <Text style={S.settingsRowValue}>
-                        {(() => {
-                          const sq = qualityLevels.find(q => q.index === currentQuality);
-                          return sq ? (sq.height === 'Auto' ? 'Auto' : `${sq.height}p`) : 'Auto';
-                        })()}
-                      </Text>
-                      <Ionicons name="chevron-forward" size={16} color="#6b7280" style={{ marginLeft: 4 }} />
-                    </TouchableOpacity>
-                    {/* Server */}
-                    <TouchableOpacity style={S.settingsRow} onPress={() => setActiveMenu('server')} activeOpacity={0.7}>
-                      <Ionicons name="desktop-outline" size={20} color="#9ca3af" />
-                      <Text style={S.settingsRowText}>Server</Text>
-                      <View style={{ flex: 1 }} />
-                      <Text style={S.settingsRowValue}>{currentServer || 'Default'}</Text>
-                      <Ionicons name="chevron-forward" size={16} color="#6b7280" style={{ marginLeft: 4 }} />
-                    </TouchableOpacity>
-                    {/* More */}
-                    <TouchableOpacity style={S.settingsRow} onPress={() => setActiveMenu('more')} activeOpacity={0.7}>
-                      <Ionicons name="options-outline" size={20} color="#9ca3af" />
-                      <Text style={S.settingsRowText}>More</Text>
-                      <View style={{ flex: 1 }} />
-                      <Ionicons name="chevron-forward" size={16} color="#6b7280" style={{ marginLeft: 4 }} />
-                    </TouchableOpacity>
-                  </View>
-                )}
-
-                {/* ── SPEED SUBMENU ── */}
-                {activeMenu === 'speed' && (
-                  <View>
-                    <View style={S.settingsSubHeader}>
-                      <TouchableOpacity onPress={() => setActiveMenu('main')} style={{ padding: 4, marginRight: 8 }}>
-                        <Ionicons name="arrow-back" size={22} color="#e5e7eb" />
-                      </TouchableOpacity>
-                      <Text style={S.settingsSubHeaderText}>Playback speed</Text>
-                    </View>
-                    {[0.5, 0.75, 1, 1.25, 1.5, 2].map(s => (
-                      <TouchableOpacity key={s} style={S.settingsRow} onPress={() => handleSpeedChange(s)} activeOpacity={0.7}>
-                        <View style={{ width: 28 }} />
-                        <Text style={S.settingsRowText}>{s === 1 ? 'Normal' : `${s}x`}</Text>
-                        <View style={{ flex: 1 }} />
-                        {playbackSpeed === s && <Ionicons name="checkmark" size={20} color="#fff" />}
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                )}
-
-                {/* ── QUALITY SUBMENU ── */}
-                {activeMenu === 'quality' && (
-                  <View>
-                    <View style={S.settingsSubHeader}>
-                      <TouchableOpacity onPress={() => setActiveMenu('main')} style={{ padding: 4, marginRight: 8 }}>
-                        <Ionicons name="arrow-back" size={22} color="#e5e7eb" />
-                      </TouchableOpacity>
-                      <Text style={S.settingsSubHeaderText}>Quality</Text>
-                    </View>
-                    {/* Always show all quality levels — show a note if only Auto is available */}
-                    {qualityLevels.map(q => {
-                      const isSelected = currentQuality === q.index;
-                      const isDefault = prefs.defaultQuality && String(q.height) === String(prefs.defaultQuality);
-                      return (
-                        <TouchableOpacity key={q.index} style={S.settingsRow} onPress={() => handleQualityChange(q)} activeOpacity={0.7}>
-                          <View style={{ width: 28 }} />
-                          <Text style={S.settingsRowText}>
-                            {q.height === 'Auto' ? 'Auto' : `${q.height}p`}
-                            {isDefault && <Text style={{ color: '#6b7280', fontSize: 12 }}> (Default)</Text>}
-                          </Text>
-                          <View style={{ flex: 1 }} />
-                          {isSelected && <Ionicons name="checkmark" size={20} color="#fff" />}
-                        </TouchableOpacity>
-                      );
-                    })}
-                    {qualityLevels.length <= 1 && (
-                      <View style={{ paddingHorizontal: 16, paddingBottom: 12, alignItems: 'center' }}>
-                        <Text style={{ color: '#6b7280', fontSize: 12 }}>Additional quality levels load once the stream starts.</Text>
-                      </View>
-                    )}
-                  </View>
-                )}
-
-                {/* ── SUBTITLES SUBMENU ── */}
-                {activeMenu === 'subtitles' && (
-                  <View>
-                    <View style={S.settingsSubHeader}>
-                      <TouchableOpacity onPress={() => setActiveMenu('main')} style={{ padding: 4, marginRight: 8 }}>
-                        <Ionicons name="arrow-back" size={22} color="#e5e7eb" />
-                      </TouchableOpacity>
-                      <Text style={S.settingsSubHeaderText}>Subtitles/CC</Text>
-                    </View>
-                    <TouchableOpacity style={S.settingsRow} onPress={() => toggleSubtitles(false)}>
-                      <View style={{ width: 28 }} />
-                      <Text style={S.settingsRowText}>Off</Text>
-                      <View style={{ flex: 1 }} />
-                      {!subtitlesEnabled && <Ionicons name="checkmark" size={20} color="#fff" />}
-                    </TouchableOpacity>
-                    {availableSubtitles.map((sub, idx) => {
-                      const isSelected = subtitlesEnabled && selectedSubtitleLabel === sub.label;
-                      return (
-                        <TouchableOpacity key={`${sub.label}-${idx}`} style={S.settingsRow} onPress={() => toggleSubtitles(true, sub.label)}>
-                          <View style={{ width: 28 }} />
-                          <Text style={S.settingsRowText}>{sub.label}</Text>
-                          <View style={{ flex: 1 }} />
-                          {isSelected && <Ionicons name="checkmark" size={20} color="#fff" />}
-                        </TouchableOpacity>
-                      )
-                    })}
-                  </View>
-                )}
-
-                {/* ── SERVER SUBMENU ── */}
-                {activeMenu === 'server' && (
-                  <View>
-                    <View style={S.settingsSubHeader}>
-                      <TouchableOpacity onPress={() => setActiveMenu('main')} style={{ padding: 4, marginRight: 8 }}>
-                        <Ionicons name="arrow-back" size={22} color="#e5e7eb" />
-                      </TouchableOpacity>
-                      <Text style={S.settingsSubHeaderText}>Server</Text>
-                    </View>
-                    {streamData?.sources
-                      ?.filter((s, i, arr) => arr.findIndex(x => x.server === s.server && x.type === s.type) === i)
-                      ?.map(server => {
-                        const isSelected = currentServer === server.server && activeType === (server.type === 'dub' ? 'dub' : 'sub');
-                        return (
-                          <TouchableOpacity key={`${server.server}-${server.type}`} style={S.settingsRow} onPress={() => handleServerChange(server.server, server.type)} activeOpacity={0.7}>
-                            <View style={{ width: 28 }} />
-                            <Text style={S.settingsRowText}>
-                              {server.server} <Text style={{ color: '#6b7280', fontSize: 13, fontWeight: '500' }}>({server.type.toUpperCase()})</Text>
-                            </Text>
-                            <View style={{ flex: 1 }} />
-                            {isSelected && <Ionicons name="checkmark" size={20} color="#fff" />}
-                          </TouchableOpacity>
-                        );
-                      }) || (
-                        <View style={{ padding: 20, alignItems: 'center' }}>
-                          <Text style={{ color: '#6b7280', fontSize: 13 }}>No servers available</Text>
-                        </View>
-                      )
-                    }
-                  </View>
-                )}
-
-                {/* ── MORE SUBMENU ── */}
-                {activeMenu === 'more' && (
-                  <View>
-                    <View style={S.settingsSubHeader}>
-                      <TouchableOpacity onPress={() => setActiveMenu('main')} style={{ padding: 4, marginRight: 8 }}>
-                        <Ionicons name="arrow-back" size={22} color="#e5e7eb" />
-                      </TouchableOpacity>
-                      <Text style={S.settingsSubHeaderText}>More</Text>
-                    </View>
-                    {[
-                      { key: 'autoPlay', label: 'Auto Play', icon: 'play-circle-outline' },
-                      { key: 'autoNext', label: 'Auto Next', icon: 'play-forward-outline' },
-                      { key: 'autoSkip', label: 'Auto Skip', icon: 'play-skip-forward-outline' },
-                      { key: 'ambientMode', label: 'Ambient mode', icon: 'color-palette-outline' },
-                      { key: 'miniplayer', label: 'Miniplayer', icon: 'albums-outline' },
-                    ].map(opt => (
-                      <TouchableOpacity key={opt.key} style={S.settingsRow} onPress={() => updatePrefs({ [opt.key]: !prefs[opt.key] })} activeOpacity={0.7}>
-                        <Ionicons name={opt.icon} size={20} color="#9ca3af" />
-                        <Text style={[S.settingsRowText, { color: '#e5e7eb', fontSize: 15, fontWeight: '500', marginLeft: 12 }]}>{opt.label}</Text>
-                        <View style={{ flex: 1 }} />
-                        <Switch
-                          value={prefs[opt.key]}
-                          onValueChange={() => updatePrefs({ [opt.key]: !prefs[opt.key] })}
-                          trackColor={{ false: '#333', true: '#22c55e' }}
-                          thumbColor={prefs[opt.key] ? '#fff' : '#999'}
-                        />
-                      </TouchableOpacity>
-                    ))}
-                    {/* Audio Boost slider */}
-                    <View style={{ paddingHorizontal: 20, paddingVertical: 12 }}>
-                      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 }}>
-                        <Text style={{ color: '#e5e7eb', fontSize: 15, fontWeight: '500' }}>Audio Boost</Text>
-                        <Text style={{ color: '#e5e7eb', fontSize: 15 }}>{prefs.audioBoost}%</Text>
-                      </View>
-                      <View
-                        style={{ height: 32, justifyContent: 'center' }}
-                        onStartShouldSetResponder={() => true}
-                        onResponderMove={(e) => {
-                          const w = Dimensions.get('window').width - 40;
-                          let pct = e.nativeEvent.locationX / w;
-                          pct = Math.max(0, Math.min(1, pct));
-                          updatePrefs({ audioBoost: Math.round(pct * 200) });
-                        }}
-                        onResponderRelease={(e) => {
-                          const w = Dimensions.get('window').width - 40;
-                          let pct = e.nativeEvent.locationX / w;
-                          pct = Math.max(0, Math.min(1, pct));
-                          updatePrefs({ audioBoost: Math.round(pct * 200) });
-                        }}
-                      >
-                        <View style={{ height: 4, backgroundColor: '#333', borderRadius: 2, pointerEvents: 'none' }}>
-                          <View style={{ height: 4, width: `${Math.min(100, Math.max(0, (prefs.audioBoost || 100) / 2))}%`, backgroundColor: '#fff', borderRadius: 2 }} />
-                          <View style={{ position: 'absolute', width: 16, height: 16, borderRadius: 8, backgroundColor: '#fff', left: `${Math.min(100, Math.max(0, (prefs.audioBoost || 100) / 2))}%`, marginLeft: -8, marginTop: -6 }} />
-                        </View>
-                      </View>
-                    </View>
-                  </View>
-                )}
-
-                <View style={{ height: 24 }} />
+                {renderSettingsContent()}
               </ScrollView>
-            </Animated.View>
+            </View>
           </View>
-        )
-      }
+        ) : (
+          /* Portrait / Vertical Mode: Sleek Slide-up Bottom Sheet */
+          <View style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'flex-end' }]}>
+            <TouchableWithoutFeedback onPress={closeSettings}>
+              <View style={StyleSheet.absoluteFill} />
+            </TouchableWithoutFeedback>
+            <View style={[S.settingsSheet, { maxHeight: Math.min(520, windowHeight * 0.75) }]}>
+              {/* Drag handle */}
+              <View style={S.settingsHandleWrap}>
+                <View style={S.settingsHandle} />
+              </View>
+
+              {/* Portrait Header */}
+              <View style={[S.settingsLandscapeHeader, { borderBottomColor: 'rgba(255,255,255,0.1)', paddingVertical: 10 }]}>
+                {activeMenu !== 'main' ? (
+                  <TouchableOpacity onPress={() => setActiveMenu('main')} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 4 }}>
+                    <Ionicons name="arrow-back" size={20} color="#fff" />
+                    <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700' }}>
+                      {activeMenu === 'speed' ? 'Playback speed' : activeMenu === 'quality' ? 'Quality' : activeMenu === 'subtitles' ? 'Subtitles/CC' : activeMenu === 'server' ? 'Server' : 'More'}
+                    </Text>
+                  </TouchableOpacity>
+                ) : (
+                  <Text style={{ color: '#fff', fontSize: 17, fontWeight: '700' }}>Settings</Text>
+                )}
+                <TouchableOpacity onPress={closeSettings} style={{ padding: 6, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.1)' }}>
+                  <Ionicons name="close" size={18} color="#fff" />
+                </TouchableOpacity>
+              </View>
+
+              <ScrollView
+                style={{ width: '100%' }}
+                contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 36 }}
+                showsVerticalScrollIndicator={true}
+                indicatorStyle="white"
+                bounces={true}
+                nestedScrollEnabled={true}
+                keyboardShouldPersistTaps="handled"
+              >
+                {renderSettingsContent()}
+              </ScrollView>
+            </View>
+          </View>
+        )}
+      </Modal>
 
       {/* ── SAVE MENU MODAL ── */}
       <Modal visible={isSaveMenuOpen} transparent animationType="fade" onRequestClose={() => setIsSaveMenuOpen(false)}>
@@ -2564,6 +2857,7 @@ const S = StyleSheet.create({
   videoOuter: {
     width: '100%', aspectRatio: 16 / 9, backgroundColor: '#000',
     shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.8, shadowRadius: 30,
+    zIndex: 50, elevation: 15,
   },
   videoInner: { flex: 1, backgroundColor: '#000', alignItems: 'center', justifyContent: 'center' },
   playerHeaderOverlay: {
@@ -2691,16 +2985,38 @@ const S = StyleSheet.create({
   releaseTime: { color: '#6b7280', fontSize: 10, marginTop: 2 },
   // Settings Modal — matches React app CustomVideoPlayer style
   settingsSheet: {
-    backgroundColor: 'rgba(28,28,30,0.97)',
-    borderTopLeftRadius: 22, borderTopRightRadius: 22,
-    paddingHorizontal: 16, paddingTop: 10,
-    maxHeight: '80%',
-    flexShrink: 1,
+    backgroundColor: '#18181b',
+    borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    paddingHorizontal: 16, paddingTop: 6,
+    maxHeight: '82%',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.08)',
     shadowColor: '#000', shadowOffset: { width: 0, height: -10 }, shadowOpacity: 0.5, shadowRadius: 20,
-    elevation: 20,
+    elevation: 25,
   },
-  settingsHandleWrap: { alignItems: 'center', paddingVertical: 10 },
-  settingsHandle: { width: 48, height: 4, borderRadius: 2, backgroundColor: '#4b5563' },
+  settingsLandscapeCard: {
+    backgroundColor: 'rgba(24,24,27,0.98)',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.7,
+    shadowRadius: 24,
+    elevation: 25,
+  },
+  settingsLandscapeHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.08)',
+  },
+  settingsHandleWrap: { alignItems: 'center', paddingVertical: 10, paddingHorizontal: 30 },
+  settingsHandle: { width: 44, height: 4.5, borderRadius: 2.5, backgroundColor: '#52525b' },
   settingsRow: {
     flexDirection: 'row', alignItems: 'center', gap: 14,
     paddingVertical: 13, paddingHorizontal: 8, borderRadius: 12,
@@ -2731,11 +3047,60 @@ const S = StyleSheet.create({
   blurBtn: { padding: 8 },
   giantPlayBtn: { width: 80, height: 80, borderRadius: 40, backgroundColor: 'rgba(255,255,255,0.15)', alignItems: 'center', justifyContent: 'center' },
   floatingPill: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 12 },
-  nativeProgressBarContainer: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 24, justifyContent: 'flex-end', paddingBottom: 0, zIndex: 5 },
-  nativeProgressTrack: { position: 'absolute', left: 0, right: 0, bottom: 0, height: 2, backgroundColor: 'rgba(255,255,255,0.3)' },
-  nativeProgressBuffered: { position: 'absolute', left: 0, bottom: 0, height: 2, backgroundColor: 'rgba(255,255,255,0.6)' },
-  nativeProgressFill: { position: 'absolute', left: 0, bottom: 0, height: 2, backgroundColor: '#FF0000' },
-  nativeProgressDot: { position: 'absolute', width: 12, height: 12, borderRadius: 6, backgroundColor: '#FF0000', bottom: -5, zIndex: 5 },
+  nativeProgressBarContainer: {
+    width: '100%',
+    height: 36,
+    justifyContent: 'flex-end',
+    paddingBottom: 0,
+    zIndex: 100,
+    elevation: 30,
+  },
+  progressTrackWrapper: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 16,
+    justifyContent: 'flex-end',
+  },
+  nativeProgressTrack: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    height: 2.5,
+    backgroundColor: 'rgba(255,255,255,0.3)',
+  },
+  nativeProgressBuffered: {
+    position: 'absolute',
+    left: 0,
+    bottom: 0,
+    height: 2.5,
+    backgroundColor: 'rgba(255,255,255,0.6)',
+  },
+  nativeProgressFill: {
+    position: 'absolute',
+    left: 0,
+    bottom: 0,
+    height: 2.5,
+    backgroundColor: '#FF0000',
+  },
+  nativeProgressDot: {
+    position: 'absolute',
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: '#FF0000',
+    borderWidth: 2,
+    borderColor: '#ffffff',
+    bottom: -5.75,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.9,
+    shadowRadius: 4,
+    elevation: 50,
+    zIndex: 9999,
+  },
   nativeSkipBtn: { position: 'absolute', zIndex: 15, backgroundColor: 'rgba(20,20,20,0.85)', borderColor: 'rgba(255,255,255,0.1)', borderWidth: 1, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 16 },
   nativeSkipText: { color: '#fff', fontSize: 13, fontWeight: '700' },
   centerPlayBtn: {
