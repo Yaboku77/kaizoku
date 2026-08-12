@@ -1,46 +1,57 @@
-{
-  "name": "kaizoku",
-  "version": "1.0.0",
-  "main": "node_modules/expo/AppEntry.js",
-  "scripts": {
-    "start": "expo start",
-    "android": "expo run:android",
-    "ios": "expo run:ios",
-    "web": "expo start --web",
-    "build:android": "eas build --platform android"
-  },
-  "dependencies": {
-    "@expo-google-fonts/shojumaru": "^0.2.3",
-    "@react-native-async-storage/async-storage": "1.23.1",
-    "@react-navigation/bottom-tabs": "^6.6.1",
-    "@react-navigation/native": "^6.1.18",
-    "@react-navigation/native-stack": "^6.11.0",
-    "@types/react": "~18.2.79",
-    "axios": "^1.7.9",
-    "buffer": "^6.0.3",
-    "cheerio-without-node-native": "^0.20.2",
-    "expo": "~51.0.28",
-    "expo-av": "~14.0.7",
-    "expo-blur": "~13.0.2",
-    "expo-font": "~12.0.10",
-    "expo-image-picker": "^15.0.7",
-    "expo-linear-gradient": "~13.0.2",
-    "expo-pip": "^1.0.0",
-    "expo-screen-orientation": "~7.0.5",
-    "expo-splash-screen": "~0.27.7",
-    "expo-status-bar": "~1.12.1",
-    "firebase": "^12.16.0",
-    "react": "18.2.0",
-    "react-native": "0.74.5",
-    "react-native-gesture-handler": "~2.16.1",
-    "react-native-safe-area-context": "4.10.5",
-    "react-native-screens": "3.31.1",
-    "react-native-webview": "13.8.6",
-    "typescript": "~5.3.3",
-    "react-native-reanimated": "~3.10.1"
-  },
-  "devDependencies": {
-    "@babel/core": "^7.24.0"
-  },
-  "private": true
-}
+# Kaizoku React Native App
+
+A React Native (Expo) anime streaming app.
+
+## Setup & Run
+
+```bash
+cd "c:\anime\kaizoku stream\app"
+npm install
+npx expo start
+```
+
+## Build APK
+
+```bash
+# First, install EAS CLI
+npm install -g eas-cli
+
+# Login to Expo account (free)
+eas login
+
+# Build APK (local build with Android Studio)
+npx expo run:android
+
+# OR build in the cloud (Expo EAS)
+eas build --platform android --profile preview
+```
+
+## Requirements
+- Node.js (installed ✅)
+- Android Studio (installed ✅)
+- Java JDK (installed ✅)
+
+## Screens Built
+- ✅ Splash Screen (K logo + progress bar)
+- ✅ Home Screen (Hero slider, Trending, Popular, Upcoming, Recent Releases)
+- ✅ Details Screen (Tabs: Overview, Episodes, Characters, Related)
+- ✅ Player Screen (Episode list + video player)
+- ✅ Browse Screen (Search + Filters + Grid)
+- ✅ Schedule Screen (Daily airing schedule)
+- ✅ My List Screen (Watchlist with tabs)
+- ✅ You Screen (Profile + Menu)
+- ✅ Settings Screen (Toggles)
+- ✅ Navigation (Bottom Tabs + Stack)
+
+run when cloade availabele
+
+1. its still dont have player add player which had on kaizoku react app
+2. sreach and notification is no working fix and also check how they look on kaizoku react app
+3. in slider at home paga its not showing logo of that anime from tmdb it was working on kaizoku react app
+4. on my list page all, planing, watching and hold button are showing big in hight fix that
+
+do ths 4 things dont skip any 
+
+
+
+"C:\anime\kaizoku stream\kaizoku"
