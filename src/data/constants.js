@@ -1,7 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-export const GEMINI_API_KEY = "";
-export const TMDB_API_KEY = "3dfa4bae246f35044e56a6dcd3294e3f";
+export const TMDB_API_KEY = "YOUR-TMDB-API-HERE";
 
 export const GENRES = ["Action","Adventure","Comedy","Drama","Ecchi","Fantasy","Horror","Mahou Shoujo","Mecha","Music","Mystery","Psychological","Romance","Sci-Fi","Slice of Life","Sports","Supernatural","Thriller"];
 export const FORMATS = [{ label: "TV Show", val: "TV" },{ label: "Movie", val: "MOVIE" },{ label: "OVA", val: "OVA" },{ label: "ONA", val: "ONA" },{ label: "Special", val: "SPECIAL" }];
