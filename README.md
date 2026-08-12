@@ -1,36 +1,3 @@
-# Kaizoku React Native App
-
-A React Native (Expo) anime streaming app.
-
-## Setup & Run
-
-```bash
-cd "c:\anime\kaizoku stream\app"
-npm install
-npx expo start
-```
-
-## Build APK
-
-```bash
-# First, install EAS CLI
-npm install -g eas-cli
-
-# Login to Expo account (free)
-eas login
-
-# Build APK (local build with Android Studio)
-npx expo run:android
-
-# OR build in the cloud (Expo EAS)
-eas build --platform android --profile preview
-```
-
-## Requirements
-- Node.js (installed ✅)
-- Android Studio (installed ✅)
-- Java JDK (installed ✅)
-
 # 🏴‍☠️ Kaizoku - The Ultimate Anime Experience
 
 Forget clunky, slow, and ad-ridden anime apps. **Kaizoku** is built differently. We set out to create the absolute best anime streaming experience on mobile—and we delivered. 
