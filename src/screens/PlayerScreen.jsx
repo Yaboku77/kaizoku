@@ -1595,7 +1595,7 @@ var introData=${JSON.stringify(intro)}, outroData=${JSON.stringify(outro)}, auto
 
 var _rnt={};
 function rn(t,p){
-  if(t==='timeUpdate'){var n=Date.now();if(_rnt[t]&&n-_rnt[t]<100)return;_rnt[t]=n;}
+  if(t==='timeUpdate'){var n=Date.now();if(_rnt[t]&&n-_rnt[t]<1000)return;_rnt[t]=n;}
   try{window.ReactNativeWebView.postMessage(JSON.stringify({type:t,payload:p}));}catch(e){}
 }
 
