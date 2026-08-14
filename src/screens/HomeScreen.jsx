@@ -419,7 +419,7 @@ export default function HomeScreen({ navigation, route }) {
       <ScrollView
         showsVerticalScrollIndicator={false}
         style={{ flex: 1 }}
-        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#fff" colors={['#4285F4', '#DB4437', '#F4B400', '#0F9D58']} />}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor="#fff" colors={['#4285F4', '#DB4437', '#F4B400', '#0F9D58']} progressViewOffset={insets.top + 50} />}
         onMomentumScrollEnd={onEndReached}
         scrollEventThrottle={400}
       >

@@ -493,7 +493,12 @@ export default function DetailsScreen({ route, navigation }) {
           )}
 
           {/* ── ACTION ROW ── */}
-          <View style={S.actionRow}>
+          <ScrollView 
+            horizontal 
+            showsHorizontalScrollIndicator={false}
+            style={{ marginHorizontal: -20, marginBottom: 24 }}
+            contentContainerStyle={{ paddingHorizontal: 20, alignItems: 'center', gap: 12 }}
+          >
             <TouchableOpacity
               style={[S.watchNowBtn, isFetchingEpisodes && { opacity: 0.5 }]}
               onPress={() => { if (!isFetchingEpisodes && episodes.length > 0) goToPlayer(0, true); }}
@@ -506,48 +511,31 @@ export default function DetailsScreen({ route, navigation }) {
               <Ionicons name={savedStatus ? "bookmark" : "bookmark-outline"} size={20} color={savedStatus ? "#d4c356" : "#9ca3af"} />
             </TouchableOpacity>
 
-            {/* ── LIKE BUTTON ── */}
-            <TouchableOpacity
-              style={[S.reactionBtn, userReaction === 'like' && S.reactionBtnActive]}
-              onPress={() => handleReaction('like')}
-              activeOpacity={0.75}
-            >
-              <Ionicons
-                name={userReaction === 'like' ? 'thumbs-up' : 'thumbs-up-outline'}
-                size={17}
-                color={userReaction === 'like' ? '#22c55e' : '#6b7280'}
-              />
-              <Text style={[S.reactionCount, userReaction === 'like' && { color: '#22c55e' }]}>
-                {likes >= 1000 ? `${(likes / 1000).toFixed(1)}k` : likes}
-              </Text>
-            </TouchableOpacity>
-
-            {/* ── DISLIKE BUTTON ── */}
-            <TouchableOpacity
-              style={[S.reactionBtn, userReaction === 'dislike' && S.reactionBtnDisactive]}
-              onPress={() => handleReaction('dislike')}
-              activeOpacity={0.75}
-            >
-              <Ionicons
-                name={userReaction === 'dislike' ? 'thumbs-down' : 'thumbs-down-outline'}
-                size={17}
-                color={userReaction === 'dislike' ? '#ef4444' : '#6b7280'}
-              />
-              <Text style={[S.reactionCount, userReaction === 'dislike' && { color: '#ef4444' }]}>
-                {dislikes >= 1000 ? `${(dislikes / 1000).toFixed(1)}k` : dislikes}
-              </Text>
-            </TouchableOpacity>
+            {/* ── LIKE/DISLIKE PILL ── */}
+            <View style={S.likeGroup}>
+              <TouchableOpacity style={S.likeBtn} onPress={() => handleReaction('like')} activeOpacity={0.7}>
+                <Ionicons name={userReaction === 'like' ? "thumbs-up" : "thumbs-up-outline"} size={18} color="#fff" />
+                <Text style={{ color: '#fff', fontSize: 13, marginLeft: 6, fontWeight: '600' }}>
+                  {likes > 0 ? (likes >= 1000 ? `${(likes / 1000).toFixed(1)}k` : likes) : 'Like'}
+                </Text>
+              </TouchableOpacity>
+              <View style={{ width: 1, backgroundColor: '#333' }} />
+              <TouchableOpacity style={S.likeBtn} onPress={() => handleReaction('dislike')} activeOpacity={0.7}>
+                <Ionicons name={userReaction === 'dislike' ? "thumbs-down" : "thumbs-down-outline"} size={18} color="#fff" />
+                {dislikes > 0 && <Text style={{ color: '#fff', fontSize: 13, marginLeft: 6, fontWeight: '600' }}>{dislikes >= 1000 ? `${(dislikes / 1000).toFixed(1)}k` : dislikes}</Text>}
+              </TouchableOpacity>
+            </View>
 
             <TouchableOpacity style={S.iconCircle}>
               <Ionicons name="share-social-outline" size={20} color="#9ca3af" />
             </TouchableOpacity>
-            <View style={{ flex: 1 }} />
+            
             {/* AL badge */}
             <View style={S.alBadge}><Text style={S.alText}>AL</Text></View>
             {getMalLink(data.externalLinks) && (
               <View style={S.malBadge}><Text style={S.malText}>MAL</Text></View>
             )}
-          </View>
+          </ScrollView>
         </View>
 
         {/* ── TABS ── */}
@@ -983,15 +971,15 @@ const S = StyleSheet.create({
   saveMenuRadio: { width: 20, height: 20, borderRadius: 10, borderWidth: 2, borderColor: '#444', alignItems: 'center', justifyContent: 'center', marginRight: 12 },
   saveMenuRadioInner: { width: 10, height: 10, borderRadius: 5, backgroundColor: '#d4c356' },
   saveMenuBtnText: { color: '#d1d5db', fontSize: 15, fontWeight: '500' },
-  // Reaction (like/dislike) buttons
-  reactionBtn: {
-    flexDirection: 'row', alignItems: 'center', gap: 5,
-    paddingHorizontal: 12, paddingVertical: 10,
-    backgroundColor: '#151515', borderRadius: 22,
-    borderWidth: 1, borderColor: '#2a2a2a',
+  likeGroup: {
+    flexDirection: 'row', backgroundColor: '#1a1a1a', borderRadius: 999,
+    borderWidth: 1, borderColor: '#2a2a2a', overflow: 'hidden',
   },
-  reactionBtnActive: { backgroundColor: 'rgba(34,197,94,0.10)', borderColor: 'rgba(34,197,94,0.35)' },
-  reactionBtnDisactive: { backgroundColor: 'rgba(239,68,68,0.10)', borderColor: 'rgba(239,68,68,0.35)' },
+  likeBtn: { paddingHorizontal: 16, paddingVertical: 10, flexDirection: 'row', alignItems: 'center' },
+  reactionDivider: {
+    width: 1, height: '60%', backgroundColor: '#2a2a2a',
+  },
+  reactionBtnDisactive: { backgroundColor: 'rgba(239,68,68,0.10)' },
   reactionCount: { color: '#6b7280', fontSize: 12, fontWeight: '700' },
   // Comments preview row
   commentPreviewRow: { flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: '#111', borderRadius: 14, paddingHorizontal: 16, paddingVertical: 14, marginBottom: 20, borderWidth: 1, borderColor: '#1a1a1a' },

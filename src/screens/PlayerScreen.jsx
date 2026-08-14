@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, ScrollView, Image,
   Dimensions, ActivityIndicator, StatusBar, Alert, Modal, BackHandler, TouchableWithoutFeedback,
-  LayoutAnimation, UIManager, Platform, Switch, Animated, AppState, PanResponder, useWindowDimensions
+  LayoutAnimation, UIManager, Platform, Switch, Animated, AppState, PanResponder, useWindowDimensions, NativeModules, DeviceEventEmitter
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as ScreenOrientation from 'expo-screen-orientation';
@@ -39,6 +39,7 @@ const safePip = (opts) => { try { enterNativePip && enterNativePip(opts); } catc
 const safeSetPipParams = (opts) => { try { setPipParams && setPipParams(opts); } catch (_) { } };
 
 const { width } = Dimensions.get('window');
+const { PipActions } = NativeModules;
 const TMDB_KEY = TMDB_API_KEY || '3dfa4bae246f35044e56a6dcd3294e3f';
 
 // Scraping runs locally on-device — no hosted proxy server needed
@@ -141,6 +142,64 @@ function VideoReleaseCard({ anime, onPress }) {
   );
 }
 
+function SettingsSlider({ label, value, min, max, step, onChange, formatValue }) {
+  const [width, setWidth] = useState(1);
+  const startValRef = useRef(value);
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: (evt) => {
+        const { locationX } = evt.nativeEvent;
+        const initialVal = calcValue(locationX);
+        startValRef.current = initialVal;
+        onChange(initialVal);
+      },
+      onPanResponderMove: (evt, gestureState) => {
+        const deltaPercentage = gestureState.dx / width;
+        const deltaVal = deltaPercentage * (max - min);
+        let newVal = startValRef.current + deltaVal;
+        newVal = Math.max(min, Math.min(max, newVal));
+        if (step) {
+          newVal = Math.round(newVal / step) * step;
+        }
+        onChange(newVal);
+      },
+      onPanResponderRelease: () => { }
+    })
+  ).current;
+
+  const calcValue = (x) => {
+    const clampedX = Math.max(0, Math.min(width, x));
+    const p = clampedX / width;
+    let newVal = min + p * (max - min);
+    if (step) newVal = Math.round(newVal / step) * step;
+    return newVal;
+  };
+
+  const percentage = (value - min) / (max - min);
+
+  return (
+    <View style={{ marginBottom: 24 }}>
+      <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 }}>
+        <Text style={{ color: '#fff', fontSize: 13, fontWeight: '500' }}>{label}</Text>
+        <Text style={{ color: '#d1d5db', fontSize: 13 }}>{formatValue ? formatValue(value) : value}</Text>
+      </View>
+      <View
+        style={{ width: '100%', height: 24, justifyContent: 'center' }}
+        onLayout={(e) => setWidth(e.nativeEvent.layout.width)}
+        {...panResponder.panHandlers}
+      >
+        <View style={{ width: '100%', height: 4, backgroundColor: '#333', borderRadius: 2 }} pointerEvents="none">
+          <View style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${percentage * 100}%`, backgroundColor: '#fff', borderRadius: 2 }} />
+          <View style={{ position: 'absolute', left: `${percentage * 100}%`, width: 16, height: 16, borderRadius: 8, backgroundColor: '#fff', top: -6, marginLeft: -8, elevation: 3 }} />
+        </View>
+      </View>
+    </View>
+  );
+}
+
 function PlayerScreenInner() {
   const insets = useSafeAreaInsets();
   const insetsRef = useRef(insets);
@@ -172,10 +231,135 @@ function PlayerScreenInner() {
   const [currentEpIdx, setCurrentEpIdx] = useState(episodeIndex);
   const [episodes, setEpisodes] = useState(passedEpisodes || []);
 
+  const fallbackAttemptedRef = useRef(null);
+
   useEffect(() => {
     setCurrentEpIdx(data.episodeIndex || 0);
     setEpisodes(data.episodes || []);
+    fallbackAttemptedRef.current = null;
   }, [data.animeId, data.episodeIndex, data.episodes]);
+
+  useEffect(() => {
+    if (animeId && fallbackAttemptedRef.current !== animeId && (!episodes || episodes.length === 0 || !episodes[0]?.still_path)) {
+      fallbackAttemptedRef.current = animeId;
+      const fetchFallbackData = async () => {
+        try {
+          const DETAILS_QUERY = `
+            query ($id: Int) {
+              Media (id: $id, type: ANIME) {
+                id title { romaji english native } synonyms startDate { year month day }
+                episodes nextAiringEpisode { episode }
+              }
+            }
+          `;
+          const res = await fetch('https://graphql.anilist.co', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: JSON.stringify({ query: DETAILS_QUERY, variables: { id: parseInt(animeId) } }),
+          });
+          const json = await res.json();
+          if (json.data?.Media) {
+            const m = json.data.Media;
+            const title = m.title?.english || m.title?.romaji || animeTitle;
+            const fetchedNativeTitle = m.title?.native;
+            const fetchedSynonyms = m.synonyms || [];
+            const episodeCount = m.episodes;
+            const nextAiringEpisode = m.nextAiringEpisode?.episode;
+            const aniYear = m.startDate?.year;
+
+            const searchRes = await fetch(`https://api.themoviedb.org/3/search/tv?api_key=${TMDB_KEY}&query=${encodeURIComponent(title)}`);
+            const searchData = await searchRes.json();
+
+            let allEps = [];
+            if (searchData.results?.length) {
+              const possibleTitles = [title, fetchedNativeTitle, ...fetchedSynonyms].filter(Boolean).map(t => t.toLowerCase().trim());
+              let bestShow = searchData.results[0];
+              let bestScore = -1;
+              searchData.results.forEach(r => {
+                const rName = (r.name || r.original_name || '').toLowerCase().trim();
+                let score = 0;
+                if (possibleTitles.includes(rName)) score += 10;
+                else if (possibleTitles.some(t => t.includes(rName) || rName.includes(t))) score += 5;
+                if (r.origin_country?.includes('JP')) score += 5;
+                if (aniYear && r.first_air_date?.startsWith(String(aniYear))) score += 5;
+                if (score > bestScore) { bestScore = score; bestShow = r; }
+              });
+
+              const tmdbId = bestShow.id;
+              const tvRes = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_KEY}`);
+              const tvData = await tvRes.json();
+              const seasons = tvData.seasons?.filter(s => s.season_number > 0) || [];
+
+              let targetSeason = 1;
+              if (seasons.length > 0) {
+                const matchedSeason = seasons.find(s => {
+                  const sName = (s.name || '').toLowerCase().trim();
+                  if (sName.length < 3) return false;
+                  return possibleTitles.some(t => t.includes(sName) || sName.includes(t));
+                });
+                if (matchedSeason) {
+                  targetSeason = matchedSeason.season_number;
+                } else if (aniYear) {
+                  const yearMatch = seasons.find(s => s.air_date?.startsWith(String(aniYear)));
+                  targetSeason = yearMatch ? yearMatch.season_number : seasons[0].season_number;
+                } else {
+                  targetSeason = seasons[0].season_number;
+                }
+              }
+
+              const expectedEps = episodeCount;
+              const seasonsToFetch = [];
+              let accumulated = 0;
+              const startIndex = seasons.findIndex(s => s.season_number === targetSeason);
+              if (startIndex !== -1) {
+                for (let i = startIndex; i < seasons.length; i++) {
+                  seasonsToFetch.push(seasons[i].season_number);
+                  accumulated += seasons[i].episode_count;
+                  if (expectedEps && accumulated >= expectedEps - 2) break;
+                }
+              } else {
+                seasonsToFetch.push(targetSeason);
+              }
+
+              const seasonResults = await Promise.all(
+                seasonsToFetch.map(sn => fetch(`https://api.themoviedb.org/3/tv/${tmdbId}/season/${sn}?api_key=${TMDB_KEY}`).then(r => r.json()))
+              );
+
+              seasonResults.forEach(sd => { if (sd.episodes) allEps = allEps.concat(sd.episodes); });
+
+              const today = new Date();
+              allEps = allEps.filter(ep => {
+                if (nextAiringEpisode && ep.episode_number >= nextAiringEpisode) return false;
+                if (ep.air_date) {
+                  const airDate = new Date(ep.air_date);
+                  if (airDate > today) return false;
+                }
+                return true;
+              });
+            }
+
+            if (allEps.length === 0) {
+              const fallbackCount = nextAiringEpisode ? nextAiringEpisode - 1 : (episodeCount || 0);
+              if (fallbackCount > 0) {
+                allEps = Array.from({ length: fallbackCount }).map((_, i) => ({
+                  name: `Episode ${i + 1}`,
+                  episode_number: i + 1,
+                  absolute_episode_number: i + 1,
+                }));
+              }
+            }
+
+            if (allEps.length > 0) {
+              setEpisodes(allEps.map((ep, idx) => ({ ...ep, absolute_episode_number: idx + 1 })));
+            }
+          }
+        } catch (err) {
+          console.log('Player fallback fetch error:', err);
+        }
+      };
+      fetchFallbackData();
+    }
+  }, [animeId, episodes]);
   const [activeTab, setActiveTab] = useState('Episodes');
   const [streamUrl, setStreamUrl] = useState(null);
   const [isStreamLoading, setIsStreamLoading] = useState(true);
@@ -183,6 +367,30 @@ function PlayerScreenInner() {
 
   // Native JSX Player states
   const [isPlaying, setIsPlaying] = useState(false);
+
+  useEffect(() => {
+    if (Platform.OS === 'android' && PipActions) {
+      PipActions.updatePipActions(isPlaying);
+    }
+  }, [isPlaying]);
+
+  useEffect(() => {
+    if (Platform.OS !== 'android' || !PipActions) return;
+    const subscription = DeviceEventEmitter.addListener('onPipAction', (action) => {
+      if (!webviewRef.current) return;
+      if (action === 'play') {
+        webviewRef.current.postMessage(JSON.stringify({ type: 'play' }));
+      } else if (action === 'pause') {
+        webviewRef.current.postMessage(JSON.stringify({ type: 'pause' }));
+      } else if (action === 'prev') {
+        webviewRef.current.postMessage(JSON.stringify({ type: 'seekBy', value: -10 }));
+      } else if (action === 'next') {
+        webviewRef.current.postMessage(JSON.stringify({ type: 'seekBy', value: 10 }));
+      }
+    });
+    return () => subscription.remove();
+  }, []);
+
   const [isBuffering, setIsBuffering] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -193,8 +401,12 @@ function PlayerScreenInner() {
   const [isControlsVisible, setIsControlsVisible] = useState(true);
   const controlsOpacity = useRef(new Animated.Value(1)).current;
 
+  const [isLocked, setIsLocked] = useState(false);
+  const isLockedRef = useRef(false);
+
   // Stream animation translation for smooth swipe up/down transitions
   const streamTranslateY = useRef(new Animated.Value(0)).current;
+  const streamScale = useRef(new Animated.Value(1)).current;
 
   const [availableSubtitles, setAvailableSubtitles] = useState([]);
   const [selectedSubtitleLabel, setSelectedSubtitleLabel] = useState('English');
@@ -320,7 +532,8 @@ function PlayerScreenInner() {
 
   const skipBy = (seconds) => {
     const dur = durationRef.current || duration || 0;
-    const newTime = Math.max(0, Math.min(dur, currentTime + seconds));
+    const baseTime = progressRef.current?.time || currentTime;
+    const newTime = Math.max(0, Math.min(dur, baseTime + seconds));
     lastSeekTimeRef.current = Date.now();
     setCurrentTime(newTime);
     setScrubTime(newTime);
@@ -367,8 +580,12 @@ function PlayerScreenInner() {
   const panResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) > 8 || Math.abs(g.dy) > 8,
+      onMoveShouldSetPanResponder: (_, g) => {
+        if (isLockedRef.current) return false;
+        return Math.abs(g.dx) > 8 || Math.abs(g.dy) > 8;
+      },
       onPanResponderGrant: () => {
+        if (isLockedRef.current) return;
         longPressTimerRef.current = setTimeout(() => {
           isHoldingSpeedRef.current = true;
           setIsHoldingSpeed(true);
@@ -376,6 +593,7 @@ function PlayerScreenInner() {
         }, 400);
       },
       onPanResponderMove: (_, gestureState) => {
+        if (isLockedRef.current) return;
         const { dy, dx } = gestureState;
         if (Math.abs(dy) > 12 || Math.abs(dx) > 12) {
           if (longPressTimerRef.current) {
@@ -412,8 +630,12 @@ function PlayerScreenInner() {
           applyPlaybackRate(1);
           return;
         }
+
         const { dx, dy } = gestureState;
-        if (Math.abs(dx) > 22 || Math.abs(dy) > 22) {
+        const now = Date.now();
+        const DOUBLE_PRESS_DELAY = 300;
+
+        if (!isLockedRef.current && (Math.abs(dx) > 22 || Math.abs(dy) > 22)) {
           if (Math.abs(dy) > Math.abs(dx) && dy > 25) {
             // Swipe Down
             if (!isFullscreenRef.current) {
@@ -444,17 +666,26 @@ function PlayerScreenInner() {
               });
               toggleFullscreenState(true, false);
             } else {
-              Animated.spring(streamTranslateY, { toValue: 0, friction: 7, tension: 50, useNativeDriver: true }).start();
+              Animated.parallel([
+                Animated.spring(streamTranslateY, { toValue: 0, friction: 7, tension: 50, useNativeDriver: true }),
+                Animated.spring(streamScale, { toValue: 1, friction: 7, tension: 50, useNativeDriver: true })
+              ]).start();
             }
           } else {
-            Animated.spring(streamTranslateY, { toValue: 0, friction: 7, tension: 50, useNativeDriver: true }).start();
+            Animated.parallel([
+              Animated.spring(streamTranslateY, { toValue: 0, friction: 7, tension: 50, useNativeDriver: true }),
+              Animated.spring(streamScale, { toValue: 1, friction: 7, tension: 50, useNativeDriver: true })
+            ]).start();
           }
         } else {
-          Animated.spring(streamTranslateY, { toValue: 0, friction: 7, tension: 50, useNativeDriver: true }).start();
+          if (!isLockedRef.current) {
+            Animated.parallel([
+              Animated.spring(streamTranslateY, { toValue: 0, friction: 7, tension: 50, useNativeDriver: true }),
+              Animated.spring(streamScale, { toValue: 1, friction: 7, tension: 50, useNativeDriver: true })
+            ]).start();
+          }
           // Tap / Double Tap
-          const now = Date.now();
-          const DOUBLE_PRESS_DELAY = 300;
-          if (now - (webviewRef.current?._lastTap || 0) < DOUBLE_PRESS_DELAY) {
+          if (!isLockedRef.current && now - (webviewRef.current?._lastTap || 0) < DOUBLE_PRESS_DELAY) {
             if (webviewRef.current?._singleTapTimer) clearTimeout(webviewRef.current._singleTapTimer);
             const { locationX } = evt.nativeEvent;
             const { width } = Dimensions.get('window');
@@ -632,6 +863,19 @@ function PlayerScreenInner() {
   const [sortOrder, setSortOrder] = useState('asc');
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [activeMenu, setActiveMenu] = useState('main');
+  const [subFontSize, setSubFontSize] = useState(4.5);
+  const [subBgOpacity, setSubBgOpacity] = useState(0);
+  const [subBlur, setSubBlur] = useState(0);
+
+  useEffect(() => {
+    if (webviewRef.current) {
+      webviewRef.current.postMessage(JSON.stringify({
+        type: 'setSubtitleStyle',
+        value: { fontSize: subFontSize, bgOpacity: subBgOpacity, blur: subBlur }
+      }));
+    }
+  }, [subFontSize, subBgOpacity, subBlur]);
+
   const [subtitlesEnabled, setSubtitlesEnabled] = useState(true);
   const subtitlesEnabledRef = useRef(true);
   const [isDescOpen, setIsDescOpen] = useState(false);
@@ -1262,7 +1506,7 @@ function PlayerScreenInner() {
           setOutroData(outro);
 
           console.log(`[DEBUG] Playing: server=${chosen.server} type=${chosen.type} m3u8=${streamSrc} referer=${chosen.referer} baseUrl=${refererBase}`);
-          setStreamUrl({ html: buildPlayerHTML(streamSrc, chosen.referer || '', tracks, playbackSpeed, initialTime, subtitlesEnabledRef.current, intro, outro, isPlayingRef.current || prefs.autoPlay), baseUrl: refererBase });
+          setStreamUrl({ html: buildPlayerHTML(streamSrc, chosen.referer || '', tracks, playbackSpeed, initialTime, subtitlesEnabledRef.current, intro, outro, isPlayingRef.current || prefs.autoPlay, { fontSize: subFontSize, bgOpacity: subBgOpacity, blur: subBlur }), baseUrl: refererBase });
           setIsStreamLoading(false);
         }
       };
@@ -1299,7 +1543,7 @@ function PlayerScreenInner() {
   // Build the player HTML with a HLS.js custom loader that adds Referer/Origin headers.
   // This eliminates the need for any external proxy — all HLS requests are made via
   // fetch() with the correct headers injected directly in the WebView.
-  const buildPlayerHTML = (src, referer = '', tracks = [], initialSpeed = 1, initialTime = 0, initialSubtitles = true, intro = null, outro = null, initialAutoPlay = false) => {
+  const buildPlayerHTML = (src, referer = '', tracks = [], initialSpeed = 1, initialTime = 0, initialSubtitles = true, intro = null, outro = null, initialAutoPlay = false, subStyle = { fontSize: 4.5, bgOpacity: 0, blur: 0 }) => {
     const subtitleTracks = (tracks || []).filter(t => t.kind === 'captions' || t.kind === 'subtitles');
 
     let activeSub = selectedSubtitleRef.current;
@@ -1331,11 +1575,13 @@ function PlayerScreenInner() {
 
     return `<!DOCTYPE html><html><head>
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<style>
+<style id="subStyle">
 *{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
 html,body{width:100%;height:100%;background:#000;overflow:hidden;}
 #vid{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;}
-::cue{font-family:sans-serif;font-size:1.05em;font-weight:800;color:#ffffff;background:transparent;text-shadow:0 2px 8px rgba(0,0,0,0.95),0 0 24px rgba(0,0,0,0.8),-1px -1px 0 rgba(0,0,0,0.6),1px -1px 0 rgba(0,0,0,0.6),-1px 1px 0 rgba(0,0,0,0.6),1px 1px 0 rgba(0,0,0,0.6);letter-spacing:0.02em;line-height:1.5;}
+::cue{font-family:sans-serif;font-weight:800;color:#ffffff;background:rgba(0,0,0,${subStyle.bgOpacity});backdrop-filter:blur(${subStyle.blur}px);text-shadow:0 2px 8px rgba(0,0,0,0.95),0 0 24px rgba(0,0,0,0.8),-1px -1px 0 rgba(0,0,0,0.6),1px -1px 0 rgba(0,0,0,0.6),-1px 1px 0 rgba(0,0,0,0.6),1px 1px 0 rgba(0,0,0,0.6);letter-spacing:0.02em;line-height:1.5;}
+@media (orientation: landscape) { ::cue { font-size: calc(${subStyle.fontSize}vw * 0.55) !important; } }
+@media (orientation: portrait) { ::cue { font-size: ${subStyle.fontSize}vw !important; } }
 </style>
 <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.13/dist/hls.min.js"></script>
 </head><body>
@@ -1480,6 +1726,7 @@ function onMsg(e){
     if(m.type==='setSrc')loadSrc(m.value);
     if(m.type==='setQuality'&&hls){hls.currentLevel=m.value;}
     if(m.type==='setAudioBoost'){vid.volume=m.value/100;}
+    if(m.type==='setSubtitleStyle'){var el=document.getElementById('subStyle');if(el)el.innerHTML='*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}html,body{width:100%;height:100%;background:#000;overflow:hidden;}#vid{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;}::cue{font-family:sans-serif;font-weight:800;color:#ffffff;background:rgba(0,0,0,'+m.value.bgOpacity+');backdrop-filter:blur('+m.value.blur+'px);text-shadow:0 2px 8px rgba(0,0,0,0.95),0 0 24px rgba(0,0,0,0.8),-1px -1px 0 rgba(0,0,0,0.6),1px -1px 0 rgba(0,0,0,0.6),-1px 1px 0 rgba(0,0,0,0.6),1px 1px 0 rgba(0,0,0,0.6);letter-spacing:0.02em;line-height:1.5;} @media (orientation: landscape) { ::cue { font-size: calc('+m.value.fontSize+'vw * 0.55) !important; } } @media (orientation: portrait) { ::cue { font-size: '+m.value.fontSize+'vw !important; } }';}
     if(m.type==='setSubtitle'){for(var i=0;i<vid.textTracks.length;i++){vid.textTracks[i].mode=(!m.value)?'hidden':(vid.textTracks[i].label===m.label?'showing':'hidden');}}
   }catch(_){}
 }
@@ -1516,30 +1763,17 @@ loadSrc(src);
       return;
     }
 
-    const sources = streamData.sources || [];
-    const isValid = (s) => {
-      if (newType === 'dub' && s.type === 'dub') {
-        const subVer = sources.find(x => x.server === s.server && x.type === 'sub');
-        if (subVer && ((s.proxyUrl && s.proxyUrl === subVer.proxyUrl) || (s.m3u8 && s.m3u8 === subVer.m3u8))) return false;
-      }
-      return true;
-    };
-
     let chosen = null;
     if (currentServer) {
-      chosen = sources.find(s => s.server === currentServer && s.type === newType && isValid(s));
+      chosen = sources.find(s => s.server === currentServer && s.type === newType);
     }
     if (!chosen) {
       for (const pref of PREFERRED_SERVERS) {
-        chosen = sources.find(s => s.server === pref && s.type === newType && isValid(s));
+        chosen = sources.find(s => s.server === pref && s.type === newType);
         if (chosen) break;
       }
       if (!chosen) {
-        chosen = sources.find(s => s.type === newType && isValid(s));
-      }
-      if (!chosen) {
-        if (currentServer) chosen = sources.find(s => s.server === currentServer && s.type === newType);
-        if (!chosen) chosen = sources.find(s => s.type === newType);
+        chosen = sources.find(s => s.type === newType);
       }
     }
 
@@ -1581,7 +1815,7 @@ loadSrc(src);
       setIntroData(intro);
       setOutroData(outro);
 
-      setStreamUrl({ html: buildPlayerHTML(streamSrc, chosen.referer || '', tracks, playbackSpeed, initialTime, subtitlesEnabledRef.current, intro, outro, isPlayingRef.current || prefs.autoPlay), baseUrl: refererBase });
+      setStreamUrl({ html: buildPlayerHTML(streamSrc, chosen.referer || '', tracks, playbackSpeed, initialTime, subtitlesEnabledRef.current, intro, outro, isPlayingRef.current || prefs.autoPlay, { fontSize: subFontSize, bgOpacity: subBgOpacity, blur: subBlur }), baseUrl: refererBase });
     }
   };
 
@@ -1638,7 +1872,7 @@ loadSrc(src);
     setIntroData(intro);
     setOutroData(outro);
 
-    const playerHTML = buildPlayerHTML(streamSrc, chosen.referer || '', tracks, playbackSpeed, initialTime, subtitlesEnabledRef.current, intro, outro, isPlayingRef.current || prefs.autoPlay);
+    const playerHTML = buildPlayerHTML(streamSrc, chosen.referer || '', tracks, playbackSpeed, initialTime, subtitlesEnabledRef.current, intro, outro, isPlayingRef.current || prefs.autoPlay, { fontSize: subFontSize, bgOpacity: subBgOpacity, blur: subBlur });
     setStreamUrl({ html: playerHTML, baseUrl: refererBase });
   };
 
@@ -1815,15 +2049,46 @@ loadSrc(src);
 
       {/* ── SPEED SUBMENU ── */}
       {activeMenu === 'speed' && (
-        <View style={{ paddingTop: 4 }}>
-          {[0.5, 0.75, 1, 1.25, 1.5, 2].map(s => (
-            <TouchableOpacity key={s} style={S.settingsRow} onPress={() => handleSpeedChange(s)} activeOpacity={0.7}>
-              <View style={{ width: 28 }} />
-              <Text style={S.settingsRowText}>{s === 1 ? 'Normal' : `${s}x`}</Text>
-              <View style={{ flex: 1 }} />
-              {playbackSpeed === s && <Ionicons name="checkmark" size={20} color="#fff" />}
-            </TouchableOpacity>
-          ))}
+        <View style={{ paddingVertical: 24, paddingHorizontal: 16, alignItems: 'center' }}>
+          <Text style={{ color: '#fff', fontSize: 15, fontWeight: '600', marginBottom: 24 }}>
+            {playbackSpeed.toFixed(2)}x
+          </Text>
+
+          {/* Slider (Visual) */}
+          <View style={{ width: '80%', paddingVertical: 12, marginBottom: 32 }}>
+            <View style={{ width: '100%', height: 4, backgroundColor: '#333', borderRadius: 2 }}>
+              <View style={{ position: 'absolute', left: 0, top: 0, bottom: 0, width: `${Math.max(0, Math.min(100, ((playbackSpeed - 0.25) / 1.75) * 100))}%`, backgroundColor: '#fff', borderRadius: 2 }} />
+              <View style={{ position: 'absolute', left: `${Math.max(0, Math.min(100, ((playbackSpeed - 0.25) / 1.75) * 100))}%`, width: 16, height: 16, borderRadius: 8, backgroundColor: '#fff', top: -6, marginLeft: -8, elevation: 3 }} />
+            </View>
+          </View>
+
+          {/* Preset Pills */}
+          <View style={{ flexDirection: 'row', gap: 10, justifyContent: 'center', flexWrap: 'wrap' }}>
+            {[0.25, 1, 1.25, 1.5, 2].map(s => {
+              const isActive = playbackSpeed === s;
+              return (
+                <TouchableOpacity
+                  key={s}
+                  onPress={() => handleSpeedChange(s)}
+                  style={{
+                    backgroundColor: isActive ? '#fff' : '#2a2a2a',
+                    paddingVertical: 8,
+                    paddingHorizontal: 16,
+                    borderRadius: 999,
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Text style={{
+                    color: isActive ? '#000' : '#fff',
+                    fontSize: 14,
+                    fontWeight: '700'
+                  }}>
+                    {s}
+                  </Text>
+                </TouchableOpacity>
+              )
+            })}
+          </View>
         </View>
       )}
 
@@ -1876,18 +2141,52 @@ loadSrc(src);
         </View>
       )}
 
+      {/* ── SUBTITLES CUSTOMIZE SUBMENU ── */}
+      {activeMenu === 'subtitles_customize' && (
+        <View style={{ paddingTop: 16 }}>
+          <SettingsSlider
+            label="Font Size"
+            value={subFontSize}
+            min={1} max={10} step={0.5}
+            onChange={(v) => setSubFontSize(v)}
+          />
+          <SettingsSlider
+            label="Background Opacity"
+            value={subBgOpacity}
+            min={0} max={1} step={0.1}
+            onChange={(v) => setSubBgOpacity(v)}
+          />
+          <SettingsSlider
+            label="Backdrop Blur"
+            value={subBlur}
+            min={0} max={10} step={1}
+            onChange={(v) => setSubBlur(v)}
+          />
+          <TouchableOpacity
+            onPress={() => {
+              setSubFontSize(4.5);
+              setSubBgOpacity(0);
+              setSubBlur(0);
+            }}
+            style={{ alignSelf: 'center', marginTop: 24, paddingVertical: 12, paddingHorizontal: 24 }}
+          >
+            <Text style={{ color: '#fff', fontSize: 16, fontWeight: '600' }}>Reset</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       {/* ── SERVER SUBMENU ── */}
       {activeMenu === 'server' && (
         <View style={{ paddingTop: 4 }}>
           {streamData?.sources
-            ?.filter((s, i, arr) => arr.findIndex(x => x.server === s.server && x.type === s.type) === i)
+            ?.filter((s, i, arr) => arr.findIndex(x => x.server === s.server) === i)
             ?.map(server => {
-              const isSelected = currentServer === server.server && activeType === (server.type === 'dub' ? 'dub' : 'sub');
+              const isSelected = currentServer === server.server;
               return (
-                <TouchableOpacity key={`${server.server}-${server.type}`} style={S.settingsRow} onPress={() => handleServerChange(server.server, server.type)} activeOpacity={0.7}>
+                <TouchableOpacity key={`${server.server}`} style={S.settingsRow} onPress={() => handleServerChange(server.server)} activeOpacity={0.7}>
                   <View style={{ width: 28 }} />
                   <Text style={S.settingsRowText}>
-                    {server.server} <Text style={{ color: '#6b7280', fontSize: 13, fontWeight: '500' }}>({server.type.toUpperCase()})</Text>
+                    {server.server}
                   </Text>
                   <View style={{ flex: 1 }} />
                   {isSelected && <Ionicons name="checkmark" size={20} color="#fff" />}
@@ -1968,8 +2267,7 @@ loadSrc(src);
       {...((isMinimized && !isInPip) ? miniPlayerPanResponder.panHandlers : {})}
     >
       {/* Hide status bar only in fullscreen mode */}
-      <StatusBar hidden={isFullscreen} translucent={true} backgroundColor="transparent" barStyle="light-content" />
-
+      <StatusBar hidden={isFullscreen} translucent={true} backgroundColor="#050505" barStyle="light-content" />
       {/* ── VIDEO PLAYER ─────────────────────────────────────────────────────────── */}
       <View style={[
         S.videoOuter,
@@ -1979,7 +2277,7 @@ loadSrc(src);
         isInPip && { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, width: '100%', height: '100%', zIndex: 9999 },
       ]}>
         {/* Animated Inner Video Layer — ONLY the video translates up & down */}
-        <Animated.View style={[StyleSheet.absoluteFill, { overflow: 'hidden', backgroundColor: '#000', transform: [{ translateY: streamTranslateY }] }]}>
+        <Animated.View style={[StyleSheet.absoluteFill, { overflow: 'hidden', backgroundColor: '#000', transformOrigin: 'bottom', transform: [{ translateY: streamTranslateY }, { scale: streamScale }] }]}>
           {streamUrl ? (
             <View style={{ flex: 1, backgroundColor: '#000' }}>
               <WebView
@@ -2184,147 +2482,159 @@ loadSrc(src);
           </View>
         )}
 
-        {/* Gesture Layer (Stationary) */}
+        {/* Unified Gesture & UI Layer */}
         {!isInPip && !isMinimized && (
-          <View style={[StyleSheet.absoluteFill, { zIndex: 5, backgroundColor: 'rgba(0,0,0,0.01)' }]} {...panResponder.panHandlers} />
-        )}
-
-        {/* UI Layer (Stationary) */}
-        {!isInPip && !isMinimized && (
-          <Animated.View
-            pointerEvents={isControlsVisible ? 'auto' : 'none'}
-            style={[StyleSheet.absoluteFill, { zIndex: 10, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'space-between', opacity: controlsOpacity }]}
-          >
-            {/* Background tap to hide/dismiss controls */}
-            <TouchableWithoutFeedback onPress={hideControls}>
-              <View style={StyleSheet.absoluteFill} />
-            </TouchableWithoutFeedback>
-
-            {/* Modern Top Bar */}
-            <LinearGradient colors={['rgba(0,0,0,0.7)', 'transparent']} style={[S.nativeTopBar, { paddingTop: isFullscreen ? Math.max(insets.top, 16) : 10, paddingLeft: Math.max(insets.left, 8), paddingRight: Math.max(insets.right, 8) }]} pointerEvents="box-none">
-              <TouchableOpacity onPress={handleBackPress} style={S.blurBtn}>
-                <Ionicons name="chevron-down" size={28} color="#fff" />
-              </TouchableOpacity>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <TouchableOpacity style={S.blurBtn} onPress={() => toggleSubtitles(!subtitlesEnabled)}>
-                  {subtitlesEnabled ? (
-                    <View style={{ backgroundColor: '#fff', borderRadius: 3, paddingHorizontal: 4, paddingVertical: 1.5, justifyContent: 'center', alignItems: 'center' }}>
-                      <Text style={{ color: '#000', fontSize: 10, fontWeight: '900', letterSpacing: 0.5 }}>CC</Text>
-                    </View>
-                  ) : (
-                    <View style={{ borderWidth: 1.5, borderColor: '#fff', borderRadius: 3, paddingHorizontal: 4, paddingVertical: 1.5, justifyContent: 'center', alignItems: 'center', opacity: 0.6 }}>
-                      <Text style={{ color: '#fff', fontSize: 10, fontWeight: '900', letterSpacing: 0.5 }}>CC</Text>
-                    </View>
-                  )}
-                </TouchableOpacity>
-                <TouchableOpacity onPress={() => { setActiveMenu('main'); setIsSettingsOpen(true); }} style={S.blurBtn}>
-                  <Ionicons name="settings-outline" size={24} color="#fff" />
-                </TouchableOpacity>
-              </View>
-            </LinearGradient>
-
-            {/* Massive Center Controls / Player Loading Spinner */}
-            <View style={[StyleSheet.absoluteFill, { alignItems: 'center', justifyContent: 'center' }]} pointerEvents="box-none">
-              {(isStreamLoading || (!streamUrl && isVideoLoading) || isBuffering) ? (
-                <ActivityIndicator size={60} color="#FF0000" />
-              ) : (
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: isFullscreen ? 60 : 36 }}>
-                  <TouchableOpacity onPress={() => currentEpIdx > 0 && changeEpisode(currentEpIdx - 1)} style={{ padding: 10 }} disabled={currentEpIdx === 0}>
-                    <Ionicons name="play-skip-back" size={isFullscreen ? 36 : 26} color="#fff" style={{ opacity: currentEpIdx > 0 ? 1 : 0.4 }} />
+          <View style={[StyleSheet.absoluteFill, { zIndex: 10 }]} {...panResponder.panHandlers}>
+            <Animated.View
+              pointerEvents={isControlsVisible ? 'box-none' : 'none'}
+              style={[StyleSheet.absoluteFill, { backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'space-between', opacity: controlsOpacity }]}
+            >
+              {/* Modern Top Bar */}
+              {!isLocked && (
+                <LinearGradient colors={['rgba(0,0,0,0.7)', 'transparent']} style={[S.nativeTopBar, { paddingTop: isFullscreen ? Math.max(insets.top, 16) : 10, paddingLeft: Math.max(insets.left, 8), paddingRight: Math.max(insets.right, 8) }]} pointerEvents="box-none">
+                  <TouchableOpacity onPress={handleBackPress} style={S.blurBtn}>
+                    <Ionicons name="chevron-down" size={28} color="#fff" />
                   </TouchableOpacity>
-
-                  <TouchableOpacity onPress={togglePlayPause} activeOpacity={0.7} style={{ padding: 10 }}>
-                    <Ionicons name={isPlaying ? "pause" : "play"} size={isFullscreen ? 60 : 44} color="#fff" style={{ marginLeft: isPlaying ? 0 : (isFullscreen ? 4 : 3) }} />
-                  </TouchableOpacity>
-
-                  <TouchableOpacity onPress={() => currentEpIdx + 1 < (episodes?.length || 0) && changeEpisode(currentEpIdx + 1)} style={{ padding: 10 }} disabled={currentEpIdx + 1 >= (episodes?.length || 0)}>
-                    <Ionicons name="play-skip-forward" size={isFullscreen ? 36 : 26} color="#fff" style={{ opacity: currentEpIdx + 1 < (episodes?.length || 0) ? 1 : 0.4 }} />
-                  </TouchableOpacity>
-                </View>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <TouchableOpacity style={S.blurBtn} onPress={() => toggleSubtitles(!subtitlesEnabled)}>
+                      {subtitlesEnabled ? (
+                        <View style={{ backgroundColor: '#fff', borderRadius: 3, paddingHorizontal: 4, paddingVertical: 1.5, justifyContent: 'center', alignItems: 'center' }}>
+                          <Text style={{ color: '#000', fontSize: 10, fontWeight: '900', letterSpacing: 0.5 }}>CC</Text>
+                        </View>
+                      ) : (
+                        <View style={{ borderWidth: 1.5, borderColor: '#fff', borderRadius: 3, paddingHorizontal: 4, paddingVertical: 1.5, justifyContent: 'center', alignItems: 'center', opacity: 0.6 }}>
+                          <Text style={{ color: '#fff', fontSize: 10, fontWeight: '900', letterSpacing: 0.5 }}>CC</Text>
+                        </View>
+                      )}
+                    </TouchableOpacity>
+                    <TouchableOpacity onPress={() => { setActiveMenu('main'); setIsSettingsOpen(true); }} style={S.blurBtn}>
+                      <Ionicons name="settings-outline" size={24} color="#fff" />
+                    </TouchableOpacity>
+                  </View>
+                </LinearGradient>
               )}
-            </View>
 
-            {/* Full-width Bottom Controls with Seek Bar touching bottom of player */}
-            <View style={{ position: 'absolute', bottom: isFullscreen ? Math.max(insets.bottom, 16) : 0, left: 0, right: 0, zIndex: 100 }} pointerEvents="box-none">
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: Math.max(insets.left, 16), paddingRight: Math.max(insets.right, 16), paddingBottom: 4, zIndex: 10 }}>
-                {/* YouTube Style Time Pill */}
-                <View style={S.timePillContainer}>
-                  <Text style={S.timePillCurrent}>
-                    {formatTime(isScrubbing ? scrubTime : currentTime)}
-                  </Text>
-                  <Text style={S.timePillSep}> / </Text>
-                  <Text style={S.timePillDuration}>
-                    {formatTime(duration)}
-                  </Text>
-                </View>
+              {/* Massive Center Controls / Player Loading Spinner */}
+              <View style={[StyleSheet.absoluteFill, { alignItems: 'center', justifyContent: 'center' }]} pointerEvents="box-none">
+                {(isStreamLoading || (!streamUrl && isVideoLoading) || isBuffering) ? (
+                  <ActivityIndicator size={60} color="#FF0000" />
+                ) : !isLocked ? (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: isFullscreen ? 60 : 36 }}>
+                    <TouchableOpacity onPress={() => currentEpIdx > 0 && changeEpisode(currentEpIdx - 1)} style={{ padding: 10 }} disabled={currentEpIdx === 0}>
+                      <Ionicons name="play-skip-back" size={isFullscreen ? 36 : 26} color="#fff" style={{ opacity: currentEpIdx > 0 ? 1 : 0.4 }} />
+                    </TouchableOpacity>
 
-                <TouchableOpacity onPress={() => toggleFullscreenState()} style={{ padding: 6 }}>
-                  <Ionicons name={isFullscreen ? "contract" : "expand"} size={20} color="#fff" />
-                </TouchableOpacity>
+                    <TouchableOpacity onPress={togglePlayPause} activeOpacity={0.7} style={{ padding: 10 }}>
+                      <Ionicons name={isPlaying ? "pause" : "play"} size={isFullscreen ? 60 : 44} color="#fff" style={{ marginLeft: isPlaying ? 0 : (isFullscreen ? 4 : 3) }} />
+                    </TouchableOpacity>
+
+                    <TouchableOpacity onPress={() => currentEpIdx + 1 < (episodes?.length || 0) && changeEpisode(currentEpIdx + 1)} style={{ padding: 10 }} disabled={currentEpIdx + 1 >= (episodes?.length || 0)}>
+                      <Ionicons name="play-skip-forward" size={isFullscreen ? 36 : 26} color="#fff" style={{ opacity: currentEpIdx + 1 < (episodes?.length || 0) ? 1 : 0.4 }} />
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
               </View>
 
-              {/* Dedicated high-hit-area Seek Bar */}
-              <View
-                ref={progressBarRef}
-                style={[
-                  S.nativeProgressBarContainer,
-                  {
-                    paddingLeft: isFullscreen ? Math.max(insets.left, 16) : 0,
-                    paddingRight: isFullscreen ? Math.max(insets.right, 16) : 0,
-                  }
-                ]}
-                onLayout={(e) => {
-                  const { width } = e.nativeEvent.layout;
-                  const safeLeft = isFullscreenRef.current ? Math.max(insetsRef.current?.left || 0, 16) : 0;
-                  const safeRight = isFullscreenRef.current ? Math.max(insetsRef.current?.right || 0, 16) : 0;
-                  const usableW = width - safeLeft - safeRight;
-                  if (usableW > 0) {
-                    setTrackWidth(usableW);
-                    progressBarLayout.current.width = usableW;
-                    progressBarLayout.current.x = safeLeft;
-                  }
-                  progressBarRef.current?.measure((x, y, w, h, pageX, pageY) => {
-                    if (w > 0) {
-                      progressBarLayout.current = {
-                        x: pageX + safeLeft,
-                        width: w - safeLeft - safeRight,
-                      };
-                    }
-                  });
-                }}
-                {...scrubPanResponder.panHandlers}
-              >
-                <View style={S.progressTrackWrapper} pointerEvents="none">
-                  {/* Background track */}
-                  <View style={S.nativeProgressTrack} />
-                  {/* Buffered fill */}
-                  <View style={[S.nativeProgressBuffered, { width: `${duration > 0 ? Math.min(100, (bufferedTime / duration) * 100) : 0}%` }]} />
+              {/* Full-width Bottom Controls with Seek Bar touching bottom of player */}
+              <View style={{ position: 'absolute', bottom: isFullscreen ? Math.max(insets.bottom, 16) : 0, left: 0, right: 0, zIndex: 100 }} pointerEvents="box-none">
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: Math.max(insets.left, 16), paddingRight: Math.max(insets.right, 16), paddingBottom: 4, zIndex: 10 }}>
+                  {/* YouTube Style Time Pill */}
+                  <View style={[S.timePillContainer, isLocked && { opacity: 0 }]}>
+                    <Text style={S.timePillCurrent}>
+                      {formatTime(isScrubbing ? scrubTime : currentTime)}
+                    </Text>
+                    <Text style={S.timePillSep}> / </Text>
+                    <Text style={S.timePillDuration}>
+                      {formatTime(duration)}
+                    </Text>
+                  </View>
 
-                  {/* Intro & Outro marks */}
-                  {introData && duration > 0 && (
-                    <View style={{ position: 'absolute', bottom: 0, height: isScrubbing ? 4 : 2.5, backgroundColor: 'rgba(252, 165, 109, 0.75)', left: `${(introData.start / duration) * 100}%`, width: `${((introData.end - introData.start) / duration) * 100}%`, borderRadius: 1.5 }} />
-                  )}
-                  {outroData && duration > 0 && (
-                    <View style={{ position: 'absolute', bottom: 0, height: isScrubbing ? 4 : 2.5, backgroundColor: 'rgba(252, 165, 109, 0.75)', left: `${(outroData.start / duration) * 100}%`, width: `${((outroData.end - outroData.start) / duration) * 100}%`, borderRadius: 1.5 }} />
-                  )}
+                  <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+                    {isFullscreen && (
+                      <TouchableOpacity
+                        onPress={() => {
+                          const newLock = !isLocked;
+                          setIsLocked(newLock);
+                          isLockedRef.current = newLock;
+                        }}
+                        style={{ padding: 6, marginRight: 8 }}
+                      >
+                        <Ionicons name={isLocked ? "lock-closed" : "lock-open"} size={20} color={isLocked ? "#FF3B30" : "#fff"} />
+                      </TouchableOpacity>
+                    )}
+                    {!isLocked && (
+                      <TouchableOpacity onPress={() => toggleFullscreenState()} style={{ padding: 6 }}>
+                        <Ionicons name={isFullscreen ? "contract" : "expand"} size={20} color="#fff" />
+                      </TouchableOpacity>
+                    )}
+                  </View>
+                </View>
 
-                  {/* Played fill */}
-                  <View style={[S.nativeProgressFill, { height: isScrubbing ? 4 : 2.5, width: `${duration > 0 ? Math.min(100, ((isScrubbing ? scrubTime : currentTime) / duration) * 100) : 0}%` }]} />
-                  {/* Red Dot with Animated Scale — 1 layer above everything */}
-                  <Animated.View
+                {/* Dedicated high-hit-area Seek Bar */}
+                {!isLocked && (
+                  <View
+                    ref={progressBarRef}
                     style={[
-                      S.nativeProgressDot,
+                      S.nativeProgressBarContainer,
                       {
-                        left: `${duration > 0 ? Math.min(100, ((isScrubbing ? scrubTime : currentTime) / duration) * 100) : 0}%`,
-                        marginLeft: -7,
-                        transform: [{ scale: scrubDotScale }],
+                        paddingLeft: isFullscreen ? Math.max(insets.left, 16) : 0,
+                        paddingRight: isFullscreen ? Math.max(insets.right, 16) : 0,
                       }
                     ]}
-                  />
-                </View>
+                    onLayout={(e) => {
+                      const { width } = e.nativeEvent.layout;
+                      const safeLeft = isFullscreenRef.current ? Math.max(insetsRef.current?.left || 0, 16) : 0;
+                      const safeRight = isFullscreenRef.current ? Math.max(insetsRef.current?.right || 0, 16) : 0;
+                      const usableW = width - safeLeft - safeRight;
+                      if (usableW > 0) {
+                        setTrackWidth(usableW);
+                        progressBarLayout.current.width = usableW;
+                        progressBarLayout.current.x = safeLeft;
+                      }
+                      progressBarRef.current?.measure((x, y, w, h, pageX, pageY) => {
+                        if (w > 0) {
+                          progressBarLayout.current = {
+                            x: pageX + safeLeft,
+                            width: w - safeLeft - safeRight,
+                          };
+                        }
+                      });
+                    }}
+                    {...scrubPanResponder.panHandlers}
+                  >
+                    <View style={S.progressTrackWrapper} pointerEvents="none">
+                      {/* Background track */}
+                      <View style={S.nativeProgressTrack} />
+                      {/* Buffered fill */}
+                      <View style={[S.nativeProgressBuffered, { width: `${duration > 0 ? Math.min(100, (bufferedTime / duration) * 100) : 0}%` }]} />
+
+                      {/* Intro & Outro marks */}
+                      {introData && duration > 0 && (
+                        <View style={{ position: 'absolute', bottom: 0, height: isScrubbing ? 4 : 2.5, backgroundColor: 'rgba(252, 165, 109, 0.75)', left: `${(introData.start / duration) * 100}%`, width: `${((introData.end - introData.start) / duration) * 100}%`, borderRadius: 1.5 }} />
+                      )}
+                      {outroData && duration > 0 && (
+                        <View style={{ position: 'absolute', bottom: 0, height: isScrubbing ? 4 : 2.5, backgroundColor: 'rgba(252, 165, 109, 0.75)', left: `${(outroData.start / duration) * 100}%`, width: `${((outroData.end - outroData.start) / duration) * 100}%`, borderRadius: 1.5 }} />
+                      )}
+
+                      {/* Played fill */}
+                      <View style={[S.nativeProgressFill, { height: isScrubbing ? 4 : 2.5, width: `${duration > 0 ? Math.min(100, ((isScrubbing ? scrubTime : currentTime) / duration) * 100) : 0}%` }]} />
+                      {/* Red Dot with Animated Scale — 1 layer above everything */}
+                      <Animated.View
+                        style={[
+                          S.nativeProgressDot,
+                          {
+                            left: `${duration > 0 ? Math.min(100, ((isScrubbing ? scrubTime : currentTime) / duration) * 100) : 0}%`,
+                            marginLeft: -7,
+                            transform: [{ scale: scrubDotScale }],
+                          }
+                        ]}
+                      />
+                    </View>
+                  </View>
+                )}
               </View>
-            </View>
-          </Animated.View>
+            </Animated.View>
+          </View>
         )}
 
         {/* Skip Accumulator Overlay (Stationary) */}
@@ -2743,18 +3053,25 @@ loadSrc(src);
               {/* Header */}
               <View style={S.settingsLandscapeHeader}>
                 {activeMenu !== 'main' ? (
-                  <TouchableOpacity onPress={() => setActiveMenu('main')} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 4 }}>
+                  <TouchableOpacity onPress={() => setActiveMenu(activeMenu === 'subtitles_customize' ? 'subtitles' : 'main')} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 4 }}>
                     <Ionicons name="arrow-back" size={20} color="#fff" />
                     <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700' }}>
-                      {activeMenu === 'speed' ? 'Playback speed' : activeMenu === 'quality' ? 'Quality' : activeMenu === 'subtitles' ? 'Subtitles/CC' : activeMenu === 'server' ? 'Server' : 'More'}
+                      {activeMenu === 'speed' ? 'Playback speed' : activeMenu === 'quality' ? 'Quality' : activeMenu === 'subtitles' ? 'Subtitles/CC' : activeMenu === 'subtitles_customize' ? 'Subtitles/CC' : activeMenu === 'server' ? 'Server' : 'More'}
                     </Text>
                   </TouchableOpacity>
                 ) : (
                   <Text style={{ color: '#fff', fontSize: 17, fontWeight: '700' }}>Settings</Text>
                 )}
-                <TouchableOpacity onPress={closeSettings} style={{ padding: 6, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.1)' }}>
-                  <Ionicons name="close" size={18} color="#fff" />
-                </TouchableOpacity>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+                  {activeMenu === 'subtitles' && (
+                    <TouchableOpacity onPress={() => setActiveMenu('subtitles_customize')} activeOpacity={0.7}>
+                      <Text style={{ color: '#d4c356', fontSize: 15, fontWeight: '600' }}>Customize</Text>
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity onPress={closeSettings} style={{ padding: 6, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.1)' }}>
+                    <Ionicons name="close" size={18} color="#fff" />
+                  </TouchableOpacity>
+                </View>
               </View>
 
               {/* Body with smooth scrolling */}
@@ -2786,18 +3103,25 @@ loadSrc(src);
               {/* Portrait Header */}
               <View style={[S.settingsLandscapeHeader, { borderBottomColor: 'rgba(255,255,255,0.1)', paddingVertical: 10 }]}>
                 {activeMenu !== 'main' ? (
-                  <TouchableOpacity onPress={() => setActiveMenu('main')} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 4 }}>
+                  <TouchableOpacity onPress={() => setActiveMenu(activeMenu === 'subtitles_customize' ? 'subtitles' : 'main')} style={{ flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 4 }}>
                     <Ionicons name="arrow-back" size={20} color="#fff" />
                     <Text style={{ color: '#fff', fontSize: 16, fontWeight: '700' }}>
-                      {activeMenu === 'speed' ? 'Playback speed' : activeMenu === 'quality' ? 'Quality' : activeMenu === 'subtitles' ? 'Subtitles/CC' : activeMenu === 'server' ? 'Server' : 'More'}
+                      {activeMenu === 'speed' ? 'Playback speed' : activeMenu === 'quality' ? 'Quality' : activeMenu === 'subtitles' ? 'Subtitles/CC' : activeMenu === 'subtitles_customize' ? 'Subtitles/CC' : activeMenu === 'server' ? 'Server' : 'More'}
                     </Text>
                   </TouchableOpacity>
                 ) : (
                   <Text style={{ color: '#fff', fontSize: 17, fontWeight: '700' }}>Settings</Text>
                 )}
-                <TouchableOpacity onPress={closeSettings} style={{ padding: 6, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.1)' }}>
-                  <Ionicons name="close" size={18} color="#fff" />
-                </TouchableOpacity>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16 }}>
+                  {activeMenu === 'subtitles' && (
+                    <TouchableOpacity onPress={() => setActiveMenu('subtitles_customize')} activeOpacity={0.7}>
+                      <Text style={{ color: '#d4c356', fontSize: 15, fontWeight: '600' }}>Customize</Text>
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity onPress={closeSettings} style={{ padding: 6, borderRadius: 16, backgroundColor: 'rgba(255,255,255,0.1)' }}>
+                    <Ionicons name="close" size={18} color="#fff" />
+                  </TouchableOpacity>
+                </View>
               </View>
 
               <ScrollView

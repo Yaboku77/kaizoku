@@ -6,6 +6,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { getHistory, clearHistory } from '../data/constants';
 import { useAuth } from '../context/AuthContext';
 import { getHistoryFromCloud, clearHistoryFromCloud } from '../api/firestore';
+import { usePlayer } from '../context/PlayerContext';
 
 function HistoryCard({ item, onPress }) {
   const pct = item.duration > 0 ? Math.min(100, Math.round((item.progress / item.duration) * 100)) : 0;
@@ -27,6 +28,7 @@ function HistoryCard({ item, onPress }) {
 export default function HistoryScreen({ navigation }) {
   const [history, setHistory] = useState([]);
   const { user } = useAuth();
+  const { play } = usePlayer();
 
   useFocusEffect(useCallback(() => {
     if (user) {
@@ -84,9 +86,12 @@ export default function HistoryScreen({ navigation }) {
               <HistoryCard
                 key={`${item.animeId}_${item.episodeIndex}_${idx}`}
                 item={item}
-                onPress={() => navigation.navigate('Details', {
+                onPress={() => play({
                   animeId: item.animeId,
-                  autoPlayEpisode: item.episodeIndex,
+                  animeTitle: item.animeTitle,
+                  coverImage: item.coverImage,
+                  episodeIndex: item.episodeIndex,
+                  episodes: [], // Episodes will be fetched by PlayerScreen fallback logic
                 })}
               />
             ))}

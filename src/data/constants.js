@@ -1,14 +1,14 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-export const TMDB_API_KEY = "YOUR-TMDB-API-HERE";
+export const TMDB_API_KEY = "3c78a3f1c589f36e1820360888354e47";
 
-export const GENRES = ["Action","Adventure","Comedy","Drama","Ecchi","Fantasy","Horror","Mahou Shoujo","Mecha","Music","Mystery","Psychological","Romance","Sci-Fi","Slice of Life","Sports","Supernatural","Thriller"];
-export const FORMATS = [{ label: "TV Show", val: "TV" },{ label: "Movie", val: "MOVIE" },{ label: "OVA", val: "OVA" },{ label: "ONA", val: "ONA" },{ label: "Special", val: "SPECIAL" }];
-export const SORTS = [{ label: "Popularity", val: "POPULARITY_DESC" },{ label: "Trending", val: "TRENDING_DESC" },{ label: "Score", val: "SCORE_DESC" },{ label: "Newest", val: "START_DATE_DESC" }];
-export const SEASONS = [{ label: "Winter", val: "WINTER" },{ label: "Spring", val: "SPRING" },{ label: "Summer", val: "SUMMER" },{ label: "Fall", val: "FALL" }];
-export const STATUSES = [{ label: "Airing", val: "RELEASING" },{ label: "Finished", val: "FINISHED" },{ label: "Upcoming", val: "NOT_YET_RELEASED" }];
-export const SOURCES = [{ label: "Original", val: "ORIGINAL" },{ label: "Manga", val: "MANGA" },{ label: "Light Novel", val: "LIGHT_NOVEL" }];
-export const COUNTRIES = [{ label: "Japan", val: "JP" },{ label: "South Korea", val: "KR" },{ label: "China", val: "CN" }];
+export const GENRES = ["Action", "Adventure", "Comedy", "Drama", "Ecchi", "Fantasy", "Horror", "Mahou Shoujo", "Mecha", "Music", "Mystery", "Psychological", "Romance", "Sci-Fi", "Slice of Life", "Sports", "Supernatural", "Thriller"];
+export const FORMATS = [{ label: "TV Show", val: "TV" }, { label: "Movie", val: "MOVIE" }, { label: "OVA", val: "OVA" }, { label: "ONA", val: "ONA" }, { label: "Special", val: "SPECIAL" }];
+export const SORTS = [{ label: "Popularity", val: "POPULARITY_DESC" }, { label: "Trending", val: "TRENDING_DESC" }, { label: "Score", val: "SCORE_DESC" }, { label: "Newest", val: "START_DATE_DESC" }];
+export const SEASONS = [{ label: "Winter", val: "WINTER" }, { label: "Spring", val: "SPRING" }, { label: "Summer", val: "SUMMER" }, { label: "Fall", val: "FALL" }];
+export const STATUSES = [{ label: "Airing", val: "RELEASING" }, { label: "Finished", val: "FINISHED" }, { label: "Upcoming", val: "NOT_YET_RELEASED" }];
+export const SOURCES = [{ label: "Original", val: "ORIGINAL" }, { label: "Manga", val: "MANGA" }, { label: "Light Novel", val: "LIGHT_NOVEL" }];
+export const COUNTRIES = [{ label: "Japan", val: "JP" }, { label: "South Korea", val: "KR" }, { label: "China", val: "CN" }];
 export const YEARS = Array.from({ length: 40 }, (_, i) => new Date().getFullYear() + 1 - i);
 export const TAGS = ["Action", "Adventure", "Comedy", "Drama", "Ecchi", "Fantasy", "Horror", "Mahou Shoujo", "Mecha", "Music", "Mystery", "Psychological", "Romance", "Sci-Fi", "Slice of Life", "Sports", "Supernatural", "Thriller", "Isekai", "Magic", "School", "Demons", "Military", "Super Power", "Aliens", "Vampire", "Time Travel", "Martial Arts", "Cyberpunk", "Space", "Idol", "Boys' Love", "Girls' Love", "Gore", "Survival", "Reincarnation"];
 
@@ -42,7 +42,7 @@ export async function saveToHistory({ animeId, animeTitle, coverImage, episodeIn
     h.unshift({ animeId, animeTitle, coverImage, episodeIndex, episodeTitle, totalEpisodes, savedAt: Date.now(), progress: oldProgress, duration: oldDuration });
     if (h.length > MAX_HISTORY) h = h.slice(0, MAX_HISTORY);
     await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(h));
-  } catch (e) {}
+  } catch (e) { }
 }
 
 export async function updateProgress({ animeId, episodeIndex, progress, duration }) {
@@ -65,7 +65,7 @@ export async function updateProgress({ animeId, episodeIndex, progress, duration
       if (h.length > MAX_HISTORY) h = h.slice(0, MAX_HISTORY);
     }
     await AsyncStorage.setItem(HISTORY_KEY, JSON.stringify(h));
-  } catch (e) {}
+  } catch (e) { }
 }
 
 export async function getHistory() {
@@ -73,11 +73,11 @@ export async function getHistory() {
 }
 
 export async function clearHistory() {
-  try { await AsyncStorage.removeItem(HISTORY_KEY); } catch (e) {}
+  try { await AsyncStorage.removeItem(HISTORY_KEY); } catch (e) { }
 }
 
 export async function savePlayerPrefs(prefs) {
-  try { const e = await getPlayerPrefs(); await AsyncStorage.setItem(PREFS_KEY, JSON.stringify({ ...e, ...prefs })); } catch (e) {}
+  try { const e = await getPlayerPrefs(); await AsyncStorage.setItem(PREFS_KEY, JSON.stringify({ ...e, ...prefs })); } catch (e) { }
 }
 
 export async function getPlayerPrefs() {
@@ -100,19 +100,19 @@ export async function saveToList({ animeId, animeTitle, coverImage, status, form
   try {
     const raw = await AsyncStorage.getItem(LIST_KEY);
     let list = raw ? JSON.parse(raw) : [];
-    
+
     // Find existing
     const existing = list.find(x => String(x.animeId) === String(animeId));
     const addedAt = existing && existing.addedAt ? existing.addedAt : Date.now();
-    
+
     // Remove if already exists
     list = list.filter(x => String(x.animeId) !== String(animeId));
-    
+
     // Add to the front of the list
     list.unshift({ animeId, animeTitle, coverImage, status, format, year, score, savedAt: Date.now(), addedAt });
-    
+
     await AsyncStorage.setItem(LIST_KEY, JSON.stringify(list));
-  } catch (e) {}
+  } catch (e) { }
 }
 
 export async function removeFromList(animeId) {
@@ -122,6 +122,6 @@ export async function removeFromList(animeId) {
     let list = JSON.parse(raw);
     list = list.filter(x => String(x.animeId) !== String(animeId));
     await AsyncStorage.setItem(LIST_KEY, JSON.stringify(list));
-  } catch (e) {}
+  } catch (e) { }
 }
 
