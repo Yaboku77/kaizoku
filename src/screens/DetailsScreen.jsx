@@ -19,7 +19,7 @@ import { saveListToCloud, removeFromListCloud, getReactionState, toggleReaction 
 const { width } = Dimensions.get('window');
 const EPISODES_PER_PAGE = 25;
 
-const TMDB_KEY = TMDB_API_KEY || '3dfa4bae246f35044e56a6dcd3294e3f';
+const TMDB_KEY = TMDB_API_KEY;
 
 function InfoRow({ label, value }) {
   if (!value) return null;
@@ -179,7 +179,7 @@ export default function DetailsScreen({ route, navigation }) {
     try {
       const res = await fetch('https://graphql.anilist.co', {
         method: 'POST',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json'
         },
@@ -493,8 +493,8 @@ export default function DetailsScreen({ route, navigation }) {
           )}
 
           {/* ── ACTION ROW ── */}
-          <ScrollView 
-            horizontal 
+          <ScrollView
+            horizontal
             showsHorizontalScrollIndicator={false}
             style={{ marginHorizontal: -20, marginBottom: 24 }}
             contentContainerStyle={{ paddingHorizontal: 20, alignItems: 'center', gap: 12 }}
@@ -529,7 +529,7 @@ export default function DetailsScreen({ route, navigation }) {
             <TouchableOpacity style={S.iconCircle}>
               <Ionicons name="share-social-outline" size={20} color="#9ca3af" />
             </TouchableOpacity>
-            
+
             {/* AL badge */}
             <View style={S.alBadge}><Text style={S.alText}>AL</Text></View>
             {getMalLink(data.externalLinks) && (

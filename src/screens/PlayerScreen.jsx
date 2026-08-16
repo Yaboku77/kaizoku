@@ -40,7 +40,7 @@ const safeSetPipParams = (opts) => { try { setPipParams && setPipParams(opts); }
 
 const { width } = Dimensions.get('window');
 const { PipActions } = NativeModules;
-const TMDB_KEY = TMDB_API_KEY || '3dfa4bae246f35044e56a6dcd3294e3f';
+const TMDB_KEY = TMDB_API_KEY;
 
 // Scraping runs locally on-device — no hosted proxy server needed
 const EPISODES_PER_PAGE = 25;

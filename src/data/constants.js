@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-export const TMDB_API_KEY = "3c78a3f1c589f36e1820360888354e47";
+export const TMDB_API_KEY = process.env.EXPO_PUBLIC_TMDB_API_KEY;
 
 export const GENRES = ["Action", "Adventure", "Comedy", "Drama", "Ecchi", "Fantasy", "Horror", "Mahou Shoujo", "Mecha", "Music", "Mystery", "Psychological", "Romance", "Sci-Fi", "Slice of Life", "Sports", "Supernatural", "Thriller"];
 export const FORMATS = [{ label: "TV Show", val: "TV" }, { label: "Movie", val: "MOVIE" }, { label: "OVA", val: "OVA" }, { label: "ONA", val: "ONA" }, { label: "Special", val: "SPECIAL" }];
@@ -124,4 +124,3 @@ export async function removeFromList(animeId) {
     await AsyncStorage.setItem(LIST_KEY, JSON.stringify(list));
   } catch (e) { }
 }
-

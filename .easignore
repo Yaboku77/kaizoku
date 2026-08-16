@@ -13,7 +13,5 @@ veda
 .vscode/
 *.swp
 .DS_Store
-*.env
 android/
 ios/
-src/data/env.js
