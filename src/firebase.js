@@ -14,7 +14,7 @@ import { getFirestore } from 'firebase/firestore';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const firebaseConfig = {
-  apiKey: "AIzaSyDkxxs1qJr0RtOpgfn9VU3PqsynPIR13hw",
+  apiKey: "",
   authDomain: "movies-f43ae.firebaseapp.com",
   databaseURL: "https://movies-f43ae.firebaseio.com",
   projectId: "movies-f43ae",
