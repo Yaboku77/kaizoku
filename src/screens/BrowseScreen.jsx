@@ -87,6 +87,7 @@ export default function BrowseScreen({ navigation, route }) {
   const [hasMore, setHasMore] = useState(true);
   const [isFiltersOpen, setIsFiltersOpen] = useState(Object.keys(initialFilters).length > 0);
   const searchTimeout = useRef(null);
+  const randomPageMode = useRef(false);
 
   useEffect(() => { fetchBrowse(1, true); }, [filters]);
 
@@ -100,10 +101,16 @@ export default function BrowseScreen({ navigation, route }) {
     if (loading && !reset) return;
     setLoading(true);
     try {
+      let fetchPage = pageNum;
+      if (reset && randomPageMode.current) {
+        fetchPage = Math.floor(Math.random() * 200) + 1;
+        randomPageMode.current = false;
+      }
+
       const getVal = (list, label) => list.find(x => x.label === label)?.val || label;
 
       const vars = {
-        page: pageNum,
+        page: fetchPage,
         sort: [filters.sort ? getVal(SORTS, filters.sort) : 'POPULARITY_DESC'],
         search: searchText || undefined,
         genre: filters.genre || undefined,
@@ -133,7 +140,7 @@ export default function BrowseScreen({ navigation, route }) {
         }));
         setResults(reset ? items : prev => [...prev, ...items]);
         setHasMore(json.data.Page.pageInfo.hasNextPage);
-        setPage(pageNum);
+        setPage(fetchPage);
       }
     } catch (e) {
       console.log('Browse fetch failed:', e);
@@ -146,6 +153,18 @@ export default function BrowseScreen({ navigation, route }) {
 
   const handleFilterChange = (field, value) => {
     setFilters(prev => ({ ...prev, [field]: value }));
+  };
+
+  const loadRandomAnime = () => {
+    randomPageMode.current = true;
+    const isFiltersEmpty = Object.values(filters).every(v => v === '') && searchText === '';
+    
+    if (isFiltersEmpty) {
+      fetchBrowse(1, true);
+    } else {
+      setSearchText('');
+      setFilters({ genre: '', format: '', sort: '', status: '', seasonYear: '', season: '', tag: '', countryOfOrigin: '', source: '' });
+    }
   };
 
   const BrowseCard = ({ item }) => {
@@ -217,6 +236,12 @@ export default function BrowseScreen({ navigation, route }) {
               returnKeyType="search"
             />
           </View>
+          <TouchableOpacity
+            style={styles.filterBtn}
+            onPress={loadRandomAnime}
+          >
+            <Ionicons name="shuffle" size={20} color="#fff" />
+          </TouchableOpacity>
           <TouchableOpacity
             style={[styles.filterBtn, isFiltersOpen && styles.filterBtnActive]}
             onPress={() => setIsFiltersOpen(!isFiltersOpen)}

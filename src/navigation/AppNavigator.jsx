@@ -1,10 +1,11 @@
 import React from 'react';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, DarkTheme } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
 import { COLORS } from '../data/constants';
+import AnimatedTabWrapper from '../components/AnimatedTabWrapper';
 
 import HomeScreen from '../screens/HomeScreen';
 import BrowseScreen from '../screens/BrowseScreen';
@@ -53,22 +54,40 @@ function BottomTabs() {
         },
       })}
     >
-      <Tab.Screen name="Home"     component={HomeScreen} />
-      <Tab.Screen name="Schedule" component={ScheduleScreen} />
-      <Tab.Screen name="Browse"   component={BrowseScreen} />
-      <Tab.Screen name="My List"  component={MyListScreen} />
-      <Tab.Screen name="You"      component={YouScreen} />
+      <Tab.Screen name="Home">
+        {(props) => <AnimatedTabWrapper><HomeScreen {...props} /></AnimatedTabWrapper>}
+      </Tab.Screen>
+      <Tab.Screen name="Schedule">
+        {(props) => <AnimatedTabWrapper><ScheduleScreen {...props} /></AnimatedTabWrapper>}
+      </Tab.Screen>
+      <Tab.Screen name="Browse">
+        {(props) => <AnimatedTabWrapper><BrowseScreen {...props} /></AnimatedTabWrapper>}
+      </Tab.Screen>
+      <Tab.Screen name="My List">
+        {(props) => <AnimatedTabWrapper><MyListScreen {...props} /></AnimatedTabWrapper>}
+      </Tab.Screen>
+      <Tab.Screen name="You">
+        {(props) => <AnimatedTabWrapper><YouScreen {...props} /></AnimatedTabWrapper>}
+      </Tab.Screen>
     </Tab.Navigator>
   );
 }
 
+const MyTheme = {
+  ...DarkTheme,
+  colors: {
+    ...DarkTheme.colors,
+    background: COLORS.bg,
+  },
+};
+
 export default function AppNavigator() {
   return (
-    <NavigationContainer>
+    <NavigationContainer theme={MyTheme}>
       <Stack.Navigator
         screenOptions={{
           headerShown: false,
-          animation: 'slide_from_right',
+          animation: 'fade_from_bottom',
           contentStyle: { backgroundColor: COLORS.bg },
         }}
       >

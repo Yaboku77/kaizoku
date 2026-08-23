@@ -162,7 +162,7 @@ function SettingsSlider({ label, value, min, max, step, onChange, formatValue })
         let newVal = startValRef.current + deltaVal;
         newVal = Math.max(min, Math.min(max, newVal));
         if (step) {
-          newVal = Math.round(newVal / step) * step;
+          newVal = parseFloat((Math.round(newVal / step) * step).toFixed(3));
         }
         onChange(newVal);
       },
@@ -174,7 +174,9 @@ function SettingsSlider({ label, value, min, max, step, onChange, formatValue })
     const clampedX = Math.max(0, Math.min(width, x));
     const p = clampedX / width;
     let newVal = min + p * (max - min);
-    if (step) newVal = Math.round(newVal / step) * step;
+    if (step) {
+      newVal = parseFloat((Math.round(newVal / step) * step).toFixed(3));
+    }
     return newVal;
   };
 
@@ -2159,7 +2161,7 @@ loadSrc(src);
           <SettingsSlider
             label="Backdrop Blur"
             value={subBlur}
-            min={0} max={10} step={1}
+            min={0} max={20} step={1}
             onChange={(v) => setSubBlur(v)}
           />
           <TouchableOpacity

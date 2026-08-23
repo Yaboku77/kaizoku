@@ -4,6 +4,12 @@
   <img src="./kaizoku.png" width="200">
 </p>
 
+<p align="center">
+  <a href="https://github.com/Yaboku77/kaizoku/releases/latest">
+    <img src="https://img.shields.io/github/downloads/Yaboku77/kaizoku/total?style=for-the-badge&color=22c55e&logo=android&label=Download%20APK" alt="Download APK" />
+  </a>
+</p>
+
 Kaizoku is a premium anime streaming mobile app built with React Native and Expo. It combines browsing, search, detailed anime information, a high-quality video player, and watchlist tracking in a polished UI.
 
 ## What is this project?
@@ -123,13 +129,6 @@ eas build --platform android --profile preview
 - The app uses custom web scrapers to dynamically fetch streaming links.
 - Firebase must be configured for cloud sync features to work correctly.
 - Ensure you have the TMDB API key set in `src/data/constants.js`.
-
-## 📌 Upcoming Fixes & Features (TODOs)
-
-1. Add external player support (like the Kaizoku React web app).
-2. Fix Search and Notification UI/UX and match the web app's look and feel.
-3. Fix Home Screen slider missing TMDB logos.
-4. Fix sizing of status buttons (Planning, Watching, On hold) on the My List page.
 
 ---
 

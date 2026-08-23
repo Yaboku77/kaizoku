@@ -1,11 +1,16 @@
 export const HOME_QUERY = `
-query ($page: Int) {
+query ($page: Int, $randomPage: Int) {
   trending: Page(page: 1, perPage: 10) {
     media(sort: TRENDING_DESC, type: ANIME, isAdult: false) {
       id title { romaji english } coverImage { extraLarge color } bannerImage format status seasonYear
     }
   }
   popular: Page(page: 1, perPage: 10) {
+    media(sort: POPULARITY_DESC, type: ANIME, isAdult: false) {
+      id title { romaji english } coverImage { extraLarge color } format status seasonYear
+    }
+  }
+  random: Page(page: $randomPage, perPage: 10) {
     media(sort: POPULARITY_DESC, type: ANIME, isAdult: false) {
       id title { romaji english } coverImage { extraLarge color } format status seasonYear
     }

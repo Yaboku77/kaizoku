@@ -147,6 +147,7 @@ export default function HomeScreen({ navigation, route }) {
   const heroScrollRef = useRef(null);
   const heroTimerRef = useRef(null);
   const releasePage = useRef(1);
+  const randomPageRef = useRef(Math.floor(Math.random() * 200) + 1);
   const [userList, setUserList] = useState([]);
   const [isSaveMenuOpen, setIsSaveMenuOpen] = useState(false);
 
@@ -198,15 +199,19 @@ export default function HomeScreen({ navigation, route }) {
   }, []);
 
   const fetchHome = useCallback(async (pageNum = 1, reset = false) => {
-    if (reset) setLoading(true);
+    if (reset) {
+      setLoading(true);
+      randomPageRef.current = Math.floor(Math.random() * 200) + 1;
+    }
     try {
+      const randomPageNum = randomPageRef.current;
       const res = await fetch('https://graphql.anilist.co', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Accept': 'application/json'
         },
-        body: JSON.stringify({ query: HOME_QUERY, variables: { page: pageNum } }),
+        body: JSON.stringify({ query: HOME_QUERY, variables: { page: pageNum, randomPage: randomPageNum } }),
       });
       const json = await res.json();
       if (json.data) {
@@ -235,6 +240,13 @@ export default function HomeScreen({ navigation, route }) {
           type: m.format === 'TV' ? 'TV Show' : (m.format || 'TV'),
           year: m.seasonYear, status: m.status,
         })) || SCREENSHOT_FALLBACK_DATA.popular;
+
+        const random = d.random?.media?.map(m => ({
+          id: m.id, title: m.title?.english || m.title?.romaji || 'Unknown',
+          image: m.coverImage?.extraLarge || '',
+          type: m.format === 'TV' ? 'TV Show' : (m.format || 'TV'),
+          year: m.seasonYear, status: m.status,
+        })) || [];
 
         const upRaw = d.upcoming?.media?.[0];
         const upcoming = upRaw ? {
@@ -353,7 +365,7 @@ export default function HomeScreen({ navigation, route }) {
         const filteredHeroes = heroWithLogos.filter(Boolean);
         const finalHeroes = filteredHeroes.length > 0 ? filteredHeroes : heroItemsRaw;
 
-        const newData = { heroItems: finalHeroes, trending, popular, upcoming, recentComments };
+        const newData = { heroItems: finalHeroes, trending, popular, random, upcoming, recentComments };
         setData(newData);
         startHeroTimer(finalHeroes);
         if (reset) {
@@ -432,9 +444,18 @@ export default function HomeScreen({ navigation, route }) {
               ref={heroScrollRef}
               horizontal
               pagingEnabled
-              scrollEnabled={false}
+              scrollEnabled={true}
               showsHorizontalScrollIndicator={false}
               style={StyleSheet.absoluteFill}
+              onMomentumScrollEnd={(e) => {
+                const offsetX = e.nativeEvent.contentOffset.x;
+                const index = Math.round(offsetX / width);
+                if (index !== activeHeroIndex && index >= 0 && index < heroItems.length) {
+                  setActiveHeroIndex(index);
+                  clearInterval(heroTimerRef.current);
+                  startHeroTimer(heroItems);
+                }
+              }}
             >
               {heroItems.map((hero, index) => (
                 <TouchableOpacity
@@ -561,6 +582,22 @@ export default function HomeScreen({ navigation, route }) {
               ? Array.from({ length: 6 }).map((_, i) => <AnimatedShimmer key={i} style={styles.skeletonCard} />)
               : (data.popular || []).map(anime => (
                 <AnimeCard key={`p-${anime.id}`} data={anime} onPress={() => goToDetails(anime.id)} />
+              ))
+            }
+          </ScrollView>
+        </View>
+
+        {/* ── RANDOM ANIMES ────────────────────────────────────────────── */}
+        <View style={styles.section}>
+          <SectionHeader
+            title="Random Animes"
+            onPress={() => navigation.navigate('BrowseStack', { initialFilters: { sort: 'Popularity' } })}
+          />
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.hScroll} contentContainerStyle={styles.hScrollContent}>
+            {loading
+              ? Array.from({ length: 6 }).map((_, i) => <AnimatedShimmer key={i} style={styles.skeletonCard} />)
+              : (data.random || []).map(anime => (
+                <AnimeCard key={`rand-${anime.id}`} data={anime} onPress={() => goToDetails(anime.id)} />
               ))
             }
           </ScrollView>
