@@ -9,7 +9,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { AnimatedShimmer } from '../components/SharedComponents';
 import { DETAILS_QUERY } from '../data/queries';
-import { TMDB_API_KEY, getList, saveToList, removeFromList } from '../data/constants';
+import { TMDB_API_KEY, tmdbFetch, getList, saveToList, removeFromList } from '../data/constants';
 import { FALLBACK_DETAILS } from '../data/mockData';
 import { usePlayer } from '../context/PlayerContext';
 import { useAuth } from '../context/AuthContext';
@@ -156,8 +156,8 @@ export default function DetailsScreen({ route, navigation }) {
 
   useEffect(() => {
     if (!loading && !isFetchingEpisodes && route.params?.autoPlayEpisode !== undefined && data && episodes.length > 0) {
-      goToPlayer(route.params.autoPlayEpisode);
-      navigation.setParams({ autoPlayEpisode: undefined });
+      goToPlayer(route.params.autoPlayEpisode, false, route.params?.openComments);
+      navigation.setParams({ autoPlayEpisode: undefined, openComments: undefined });
     }
   }, [loading, isFetchingEpisodes, data, episodes, route.params?.autoPlayEpisode]);
 
@@ -261,7 +261,7 @@ export default function DetailsScreen({ route, navigation }) {
     setIsFetchingEpisodes(true);
     try {
       const title = d.title;
-      const searchRes = await fetch(`https://api.themoviedb.org/3/search/tv?api_key=${TMDB_KEY}&query=${encodeURIComponent(title)}`);
+      const searchRes = await tmdbFetch(`https://api.themoviedb.org/3/search/tv?api_key=${TMDB_KEY}&query=${encodeURIComponent(title)}`);
       const searchData = await searchRes.json();
 
       if (!searchData.results?.length) {
@@ -295,7 +295,7 @@ export default function DetailsScreen({ route, navigation }) {
       });
 
       const tmdbId = bestShow.id;
-      const tvRes = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_KEY}`);
+      const tvRes = await tmdbFetch(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_KEY}`);
       const tvData = await tvRes.json();
       const seasons = tvData.seasons?.filter(s => s.season_number > 0) || [];
 
@@ -331,7 +331,7 @@ export default function DetailsScreen({ route, navigation }) {
       }
 
       const seasonResults = await Promise.all(
-        seasonsToFetch.map(sn => fetch(`https://api.themoviedb.org/3/tv/${tmdbId}/season/${sn}?api_key=${TMDB_KEY}`).then(r => r.json()))
+        seasonsToFetch.map(sn => tmdbFetch(`https://api.themoviedb.org/3/tv/${tmdbId}/season/${sn}?api_key=${TMDB_KEY}`).then(r => r.json()))
       );
 
       let allEps = [];
@@ -383,7 +383,7 @@ export default function DetailsScreen({ route, navigation }) {
 
   const getMalLink = (links) => links?.find(l => l.site === 'MyAnimeList')?.url || null;
 
-  const goToPlayer = async (epIdx = 0, resume = false) => {
+  const goToPlayer = async (epIdx = 0, resume = false, openComments = false) => {
     let targetIdx = epIdx;
     if (resume) {
       try {
@@ -403,6 +403,7 @@ export default function DetailsScreen({ route, navigation }) {
       idMal: data.idMal,
       animeTitle: data.title,
       coverImage: data.coverImage,
+      bannerImage: data.bannerImage,
       nativeTitle: data.nativeTitle,
       synonyms: data.synonyms,
       description: data.description,
@@ -412,6 +413,7 @@ export default function DetailsScreen({ route, navigation }) {
       trailer: data.trailer,
       relations: data.relations,
       recommendations: data.recommendations,
+      openComments: openComments,
     });
   };
 
@@ -713,7 +715,7 @@ export default function DetailsScreen({ route, navigation }) {
                   >
                     <View style={S.epThumb}>
                       <Image
-                        source={{ uri: ep.still_path ? `https://image.tmdb.org/t/p/w300${ep.still_path}` : data.coverImage }}
+                        source={{ uri: ep.still_path ? `https://tmdb-proxy.bgtoons.workers.dev/t/p/w300${ep.still_path}` : data.coverImage }}
                         style={StyleSheet.absoluteFill}
                         resizeMode="cover"
                       />

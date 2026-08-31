@@ -14,7 +14,7 @@ async function parseM3u8Subtitles(
   try {
     const { data } = await axios.get<string>(m3u8Url, {
       headers: { ...DEFAULT_HEADERS, Referer: referer },
-      timeout: 5000,
+      timeout: 15000,
     });
     const tracks: { file: string; label?: string; kind?: string; default?: boolean }[] = [];
     for (const line of data.split('\n')) {
@@ -85,7 +85,7 @@ async function _doMegaplay(
   const id = match[1];
   const { data } = await axios.get(`https://${host}/stream/getSources?id=${id}`, {
     headers: { ...DEFAULT_HEADERS, 'X-Requested-With': 'XMLHttpRequest', Referer: referer },
-    timeout: 5000,
+    timeout: 15000,
   });
 
   const rawSources: any[] = Array.isArray(data?.sources) ? data.sources : (data?.sources?.file ? [{ file: data.sources.file }] : []);
@@ -116,7 +116,7 @@ async function _doMegaplay(
       parsedM3u8.host = replacementHost;
       m3u8 = parsedM3u8.toString();
     } catch (_) { }
-    
+
     if (allSources) {
       allSources.forEach(source => {
         if (source.file && source.file.includes('mewstream.buzz')) {
@@ -158,7 +158,7 @@ async function _doMegacloud(
       'X-Requested-With': 'XMLHttpRequest',
       Referer: referer,
     },
-    timeout: 5000,
+    timeout: 15000,
   });
 
   const tracks: SubtitleTrack[] = data?.tracks || [];
@@ -227,7 +227,7 @@ export async function extractKiwiMapper(
 
       const { data: serverData } = await axios.get(`${baseUrl}/ajax/server?get=${serverCode}`, {
         headers: { ...DEFAULT_HEADERS, 'X-Requested-With': 'XMLHttpRequest' },
-        timeout: 5000,
+        timeout: 15000,
       });
 
       let embedUrl: string | null = serverData?.result?.url ?? null;
@@ -300,7 +300,7 @@ export async function extractMegaplay(embedUrl: string): Promise<ExtractedStream
     const referer = 'https://' + host + '/';
     const { data: html } = await axios.get<string>(embedUrl, {
       headers: { ...DEFAULT_HEADERS, Referer: referer },
-      timeout: 5000,
+      timeout: 15000,
     });
     return await _doMegaplay(host, html, referer);
   } catch (err) {
@@ -315,7 +315,7 @@ export async function extractMegacloud(embedUrl: string): Promise<ExtractedStrea
     const referer = origin + '/';
     const { data: html } = await axios.get<string>(embedUrl, {
       headers: { ...DEFAULT_HEADERS, Referer: referer },
-      timeout: 5000,
+      timeout: 15000,
     });
     return await _doMegacloud(embedUrl, html, referer);
   } catch (err) {
@@ -358,7 +358,7 @@ export async function extractStreamUrl(embedUrl: string): Promise<ExtractedStrea
       try {
         response = await axios.get<string>(currentUrl, {
           headers: { ...DEFAULT_HEADERS, Referer: referer },
-          timeout: 5000,
+          timeout: 15000,
         });
       } catch {
         if (currentUrl.includes('vidwish.live') || currentUrl.includes('megacloud.bloggy.click')) {
@@ -369,7 +369,7 @@ export async function extractStreamUrl(embedUrl: string): Promise<ExtractedStrea
           referer = 'https://' + host + '/';
           response = await axios.get<string>(fallbackUrl, {
             headers: { ...DEFAULT_HEADERS, Referer: referer },
-            timeout: 5000,
+            timeout: 15000,
           });
           currentUrl = fallbackUrl;
         } else {
@@ -394,7 +394,7 @@ export async function extractStreamUrl(embedUrl: string): Promise<ExtractedStrea
         referer = 'https://' + host + '/';
         response = await axios.get<string>(fallbackUrl, {
           headers: { ...DEFAULT_HEADERS, Referer: referer },
-          timeout: 5000,
+          timeout: 15000,
         });
         currentUrl = fallbackUrl;
         html = response.data;

@@ -191,7 +191,7 @@ const styles = StyleSheet.create({
   headerTitle: { color: '#fff', fontSize: 22, fontWeight: '700', letterSpacing: 0.3 },
   headerTime: { color: '#9ca3af', fontSize: 13, fontFamily: 'monospace', letterSpacing: 0.5, marginTop: 4 },
   dateScroll: { borderBottomWidth: 1, borderBottomColor: '#1a1a1a' },
-  dateRow: { paddingHorizontal: 16, paddingVertical: 12, gap: 10, flexDirection: 'row', alignItems: 'center' },
+  dateRow: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 24, gap: 10, flexDirection: 'row', alignItems: 'center' },
   dateChip: {
     width: 72, height: 72, borderRadius: 16,
     backgroundColor: '#151515', borderWidth: 1, borderColor: '#222',

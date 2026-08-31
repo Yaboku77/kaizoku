@@ -6,6 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
 import { COLORS } from '../data/constants';
 import AnimatedTabWrapper from '../components/AnimatedTabWrapper';
+import { navigationRef } from './RootNavigation';
 
 import HomeScreen from '../screens/HomeScreen';
 import BrowseScreen from '../screens/BrowseScreen';
@@ -83,7 +84,7 @@ const MyTheme = {
 
 export default function AppNavigator() {
   return (
-    <NavigationContainer theme={MyTheme}>
+    <NavigationContainer ref={navigationRef} theme={MyTheme}>
       <Stack.Navigator
         screenOptions={{
           headerShown: false,

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, Image, ScrollView,
   Dimensions, Animated, RefreshControl, ActivityIndicator, FlatList,
@@ -9,12 +9,52 @@ import { useFocusEffect } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { AnimatedShimmer } from '../components/SharedComponents';
-import { TMDB_API_KEY, getList, saveToList, removeFromList } from '../data/constants';
+import { TMDB_API_KEY, tmdbFetch, getList, saveToList, removeFromList, getHistory, getCachedTmdbEpisodeImage } from '../data/constants';
+import { getHistoryFromCloud } from '../api/firestore';
+import { useAuth } from '../context/AuthContext';
 import { HOME_QUERY } from '../data/queries';
 import { SCREENSHOT_FALLBACK_DATA, FALLBACK_COMMENTS } from '../data/mockData';
+import { scrapeSubDubForTitles } from '../api/scrapers/search.scraper';
 
 const { width, height } = Dimensions.get('window');
 const HERO_HEIGHT = height * 0.72;
+
+// ─── DiveBackInCard ─────────────────────────────────────────────────────────────
+function DiveBackInCard({ item, onPress }) {
+  const [imageUri, setImageUri] = useState(item.episodeImage || item.bannerImage || item.coverImage);
+  const pct = item.duration > 0 ? Math.min(100, Math.round((item.progress / item.duration) * 100)) : 0;
+  
+  useEffect(() => {
+    if (!item.episodeImage) {
+      getCachedTmdbEpisodeImage(item.animeTitle, item.episodeIndex).then(uri => {
+        if (uri !== 'NOT_FOUND') setImageUri(uri);
+      });
+    }
+  }, [item.animeTitle, item.episodeIndex, item.episodeImage]);
+
+  const formatTime = (seconds) => {
+    if (!seconds) return '00:00';
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s < 10 ? '0' : ''}${s}`;
+  };
+
+  return (
+    <TouchableOpacity style={styles.diveCard} onPress={onPress} activeOpacity={0.75}>
+      <View style={styles.diveThumb}>
+        <Image source={{ uri: imageUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+        <View style={styles.diveDurationBadge}>
+          <Text style={styles.diveDurationText}>{formatTime(item.duration)}</Text>
+        </View>
+        <View style={styles.diveProgBar}>
+          <View style={[styles.diveProgFill, { width: `${pct}%` }]} />
+        </View>
+      </View>
+      <Text style={styles.diveAnimeTitle} numberOfLines={1}>{item.animeTitle}</Text>
+      <Text style={styles.diveEpTitle} numberOfLines={1}>{item.episodeTitle || `Episode ${item.episodeIndex + 1}`}</Text>
+    </TouchableOpacity>
+  );
+}
 
 // ─── AnimeCard (matches web: 110px wide, 3/4.2 ratio) ─────────────────────
 function AnimeCard({ data, onPress }) {
@@ -28,10 +68,21 @@ function AnimeCard({ data, onPress }) {
     return { backgroundColor: '#6b7280' };
   };
 
+  // hasSub/hasDub come from the anikoto enrichment pass (set directly on the card)
+  // or fall back to episodes count if available
+  const hasSub = data.hasSub === true || (data.episodes?.sub != null && data.episodes.sub > 0);
+  const hasDub = data.hasDub === true || (data.episodes?.dub != null && data.episodes.dub > 0);
+
   return (
     <TouchableOpacity onPress={onPress} style={styles.animeCard} activeOpacity={0.75}>
       <View style={styles.animeCardImage}>
         <Image source={{ uri: data.image }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+        {(hasSub || hasDub) && (
+          <View style={styles.subDubRow}>
+            {hasSub && <View style={styles.subBadge}><Text style={styles.subDubText}>SUB</Text></View>}
+            {hasDub && <View style={styles.dubBadge}><Text style={styles.subDubText}>DUB</Text></View>}
+          </View>
+        )}
       </View>
       <View style={styles.animeCardMeta}>
         <Text style={styles.animeCardType}>{data.type || data.format}</Text>
@@ -138,8 +189,10 @@ function HeroIndicators({ items, activeIndex, onPress }) {
 // ─── Main HomeScreen ─────────────────────────────────────────────────────────
 export default function HomeScreen({ navigation, route }) {
   const insets = useSafeAreaInsets();
+  const { user } = useAuth();
   const [data, setData] = useState(SCREENSHOT_FALLBACK_DATA);
   const [recentReleases, setRecentReleases] = useState([]);
+  const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
@@ -153,9 +206,30 @@ export default function HomeScreen({ navigation, route }) {
 
   useFocusEffect(useCallback(() => {
     getList().then(setUserList);
-  }, []));
+    
+    if (user) {
+      getHistoryFromCloud(user.uid)
+        .then(cloud => {
+          if (cloud.length > 0) setHistory(cloud);
+          else getHistory().then(setHistory);
+        })
+        .catch(() => getHistory().then(setHistory));
+    } else {
+      getHistory().then(setHistory);
+    }
+  }, [user]));
 
   const activeHero = data.heroItems?.[activeHeroIndex] || data.trending?.[activeHeroIndex];
+
+  const displayComments = useMemo(() => {
+    if (data.recentComments?.length > 0) return data.recentComments;
+    // Sort by likes (top) and randomize a selection on load
+    return [...FALLBACK_COMMENTS]
+      .sort((a, b) => b.likes - a.likes)
+      .slice(0, 5)
+      .sort(() => 0.5 - Math.random())
+      .slice(0, 3);
+  }, [data.recentComments, loading]);
   const activeSaved = userList.find(x => String(x.animeId) === String(activeHero?.id));
   const savedStatus = activeSaved ? activeSaved.status : null;
 
@@ -248,6 +322,25 @@ export default function HomeScreen({ navigation, route }) {
           year: m.seasonYear, status: m.status,
         })) || [];
 
+        // ── Enrich cards with sub/dub info from anikoto (fire-and-forget enrichment) ──
+        const allCards = [...trending, ...popular, ...random];
+        const allTitles = allCards.map(c => c.title);
+        scrapeSubDubForTitles(allTitles)
+          .then(subDubMap => {
+            const normTitle = (t) => t.toLowerCase().replace(/[^a-z0-9]/g, '');
+            const enrich = (arr) => arr.map(c => {
+              const info = subDubMap[normTitle(c.title)];
+              return info ? { ...c, hasSub: info.hasSub, hasDub: info.hasDub } : c;
+            });
+            setData(prev => ({
+              ...prev,
+              trending: enrich(prev.trending || []),
+              popular: enrich(prev.popular || []),
+              random: enrich(prev.random || []),
+            }));
+          })
+          .catch(() => {}); // silently fail — badges just won't show
+
         const upRaw = d.upcoming?.media?.[0];
         const upcoming = upRaw ? {
           id: upRaw.id,
@@ -295,21 +388,33 @@ export default function HomeScreen({ navigation, route }) {
               'Accept': 'application/json'
             },
             body: JSON.stringify({
-              query: `query { Page(page: 1, perPage: 3) { threadComments(sort: ID_DESC) { id comment(asHtml: true) createdAt user { name avatar { medium } } thread { title mediaCategories { title { romaji english } } } } } }`
+              query: `query { Page(page: 1, perPage: 3) { threadComments(sort: ID_DESC) { id comment(asHtml: true) createdAt user { name avatar { medium } } thread { title mediaCategories { id title { romaji english } } } } } }`
             })
           });
           const commentJson = await commentRes.json();
           if (commentJson.data?.Page?.threadComments) {
-            recentComments = commentJson.data.Page.threadComments.map(c => ({
-              id: String(c.id),
-              anime: c.thread?.mediaCategories?.[0]?.title?.english || c.thread?.mediaCategories?.[0]?.title?.romaji || c.thread?.title || 'Unknown',
-              user: c.user?.name || 'Anonymous',
-              avatar: c.user?.avatar?.medium,
-              time: formatTimeAgo(c.createdAt),
-              text: c.comment?.replace(/<[^>]*>?/gm, '').trim() || '',
-              likes: 0,
-              replies: 0,
-            }));
+            recentComments = commentJson.data.Page.threadComments.map(c => {
+              const media = c.thread?.mediaCategories?.[0];
+              let epNum = null;
+              if (c.thread?.title) {
+                const epMatch = c.thread.title.match(/Episode\s(\d+)/i);
+                if (epMatch) {
+                  epNum = parseInt(epMatch[1], 10);
+                }
+              }
+              return {
+                id: String(c.id),
+                anime: media?.title?.english || media?.title?.romaji || c.thread?.title || 'Unknown',
+                animeId: media?.id || null,
+                epNum: epNum,
+                user: c.user?.name || 'Anonymous',
+                avatar: c.user?.avatar?.medium,
+                time: formatTimeAgo(c.createdAt),
+                text: c.comment?.replace(/<[^>]*>?/gm, '').trim() || '',
+                likes: 0,
+                replies: 0,
+              };
+            });
           } else if (commentJson.errors) {
             console.log("AniList Comments API Error:", commentJson.errors);
           }
@@ -323,7 +428,7 @@ export default function HomeScreen({ navigation, route }) {
             let titleImage = null;
             try {
               // Step 1: Try TV search (exact same as React app — no extra filters)
-              const searchRes = await fetch(
+              const searchRes = await tmdbFetch(
                 `https://api.themoviedb.org/3/search/tv?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(hero.title)}`
               );
               const searchData = await searchRes.json();
@@ -331,28 +436,28 @@ export default function HomeScreen({ navigation, route }) {
                 let tmdbId = searchData.results[0].id;
                 const animeResult = searchData.results.find(r => r.original_language === 'ja' || (r.genre_ids && r.genre_ids.includes(16)));
                 if (animeResult) tmdbId = animeResult.id;
-                const imgRes = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}/images?api_key=${TMDB_API_KEY}`);
+                const imgRes = await tmdbFetch(`https://api.themoviedb.org/3/tv/${tmdbId}/images?api_key=${TMDB_API_KEY}`);
                 const imgData = await imgRes.json();
                 if (imgData.logos?.length > 0) {
                   const enLogo = imgData.logos.find(l => l.iso_639_1 === 'en');
                   const selectedLogo = enLogo || imgData.logos[0];
-                  titleImage = `https://image.tmdb.org/t/p/w500${selectedLogo.file_path}`;
+                  titleImage = `https://tmdb-proxy.bgtoons.workers.dev/t/p/w500${selectedLogo.file_path}`;
                 }
               }
               // Step 2: Fallback to movie search (anime films not in TV db)
               if (!titleImage) {
-                const movieRes = await fetch(
+                const movieRes = await tmdbFetch(
                   `https://api.themoviedb.org/3/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(hero.title)}`
                 );
                 const movieData = await movieRes.json();
                 if (movieData.results?.length > 0) {
                   const mid = movieData.results[0].id;
-                  const mImgRes = await fetch(`https://api.themoviedb.org/3/movie/${mid}/images?api_key=${TMDB_API_KEY}`);
+                  const mImgRes = await tmdbFetch(`https://api.themoviedb.org/3/movie/${mid}/images?api_key=${TMDB_API_KEY}`);
                   const mImgData = await mImgRes.json();
                   if (mImgData.logos?.length > 0) {
                     const enLogo = mImgData.logos.find(l => l.iso_639_1 === 'en');
                     const selectedLogo = enLogo || mImgData.logos[0];
-                    titleImage = `https://image.tmdb.org/t/p/w500${selectedLogo.file_path}`;
+                    titleImage = `https://tmdb-proxy.bgtoons.workers.dev/t/p/w500${selectedLogo.file_path}`;
                   }
                 }
               }
@@ -545,6 +650,38 @@ export default function HomeScreen({ navigation, route }) {
           )}
         </View>
 
+        {/* ── DIVE BACK IN ─────────────────────────────────────────────── */}
+        {(loading || history.length > 0) && (
+          <View style={styles.section}>
+            <SectionHeader
+              title="Dive Back In"
+              onPress={() => navigation.navigate('You')}
+            />
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.hScroll} contentContainerStyle={styles.hScrollContent}>
+              {loading ? (
+                Array.from({ length: 4 }).map((_, i) => (
+                  <View key={`dive-skel-${i}`} style={{ width: 240 }}>
+                    <AnimatedShimmer style={styles.diveThumb} />
+                    <AnimatedShimmer style={{ width: '80%', height: 14, borderRadius: 4, marginBottom: 6 }} />
+                    <AnimatedShimmer style={{ width: '50%', height: 16, borderRadius: 4 }} />
+                  </View>
+                ))
+              ) : (
+                history.slice(0, 10).map((item, idx) => (
+                  <DiveBackInCard
+                    key={`dive-${item.animeId}-${item.episodeIndex}-${idx}`}
+                    item={item}
+                    onPress={() => navigation.navigate('Details', {
+                      animeId: item.animeId,
+                      autoPlayEpisode: item.episodeIndex,
+                    })}
+                  />
+                ))
+              )}
+            </ScrollView>
+          </View>
+        )}
+
         {/* ── TRENDING NOW ─────────────────────────────────────────────── */}
         <View style={styles.section}>
           <SectionHeader
@@ -567,7 +704,40 @@ export default function HomeScreen({ navigation, route }) {
             <Text style={styles.sectionTitle}>Recent Comments</Text>
           </View>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.hScroll} contentContainerStyle={styles.hScrollContent}>
-            {(data.recentComments?.length > 0 ? data.recentComments : FALLBACK_COMMENTS).map(c => <CommentCard key={c.id} comment={c} />)}
+            {loading ? (
+              Array.from({ length: 3 }).map((_, i) => (
+                <View key={`comment-skel-${i}`} style={[styles.commentCard, { padding: 16 }]}>
+                  <View style={styles.commentTop}>
+                    <AnimatedShimmer style={{ width: '60%', height: 14, borderRadius: 4 }} />
+                    <AnimatedShimmer style={{ width: '20%', height: 12, borderRadius: 4 }} />
+                  </View>
+                  <AnimatedShimmer style={{ width: '100%', height: 12, borderRadius: 4, marginTop: 12 }} />
+                  <AnimatedShimmer style={{ width: '80%', height: 12, borderRadius: 4, marginTop: 6 }} />
+                  <View style={styles.commentUserRow}>
+                    <AnimatedShimmer style={styles.commentAvatar} />
+                    <AnimatedShimmer style={{ width: '40%', height: 12, borderRadius: 4 }} />
+                  </View>
+                </View>
+              ))
+            ) : (
+              displayComments.map(c => (
+                <TouchableOpacity
+                  key={c.id}
+                  activeOpacity={0.8}
+                  onPress={() => {
+                    if (c.animeId) {
+                      navigation.navigate('Details', {
+                        animeId: c.animeId,
+                        autoPlayEpisode: c.epNum ? Math.max(0, c.epNum - 1) : 0,
+                        openComments: true
+                      });
+                    }
+                  }}
+                >
+                  <CommentCard comment={c} />
+                </TouchableOpacity>
+              ))
+            )}
           </ScrollView>
         </View>
 
@@ -604,32 +774,50 @@ export default function HomeScreen({ navigation, route }) {
         </View>
 
         {/* ── TOP UPCOMING ─────────────────────────────────────────────── */}
-        {data.upcoming && (
+        {(loading || data.upcoming) && (
           <View style={styles.section}>
             <SectionHeader title="Top Upcoming" />
-            <TouchableOpacity
-              style={styles.upcomingCard}
-              onPress={() => goToDetails(data.upcoming.id)}
-              activeOpacity={0.85}
-            >
-              <Image source={{ uri: data.upcoming.image }} style={styles.upcomingImg} resizeMode="cover" />
-              <View style={styles.upcomingInfo}>
-                <Text style={styles.upcomingLabel}>Ep 1 airing in</Text>
-                <Text style={styles.upcomingTime}>{data.upcoming.ep1Airing}</Text>
-                {data.upcoming.source && (
-                  <Text style={styles.upcomingSource}>Source : {data.upcoming.source}</Text>
-                )}
-                <Text style={styles.upcomingTitle} numberOfLines={1}>{data.upcoming.title}</Text>
-                <Text style={styles.upcomingSynopsis} numberOfLines={2}>{data.upcoming.synopsis}</Text>
-                <View style={styles.genreRow}>
-                  {(data.upcoming.genres || []).map(g => (
-                    <View key={g} style={styles.genreChip}>
-                      <Text style={styles.genreText}>{g}</Text>
-                    </View>
-                  ))}
+            {loading ? (
+              <View style={[styles.upcomingCard, { padding: 0 }]}>
+                <AnimatedShimmer style={styles.upcomingImg} />
+                <View style={styles.upcomingInfo}>
+                  <AnimatedShimmer style={{ width: '40%', height: 12, borderRadius: 4 }} />
+                  <AnimatedShimmer style={{ width: '60%', height: 18, borderRadius: 4, marginTop: 4 }} />
+                  <View style={{ flex: 1, justifyContent: 'center', gap: 6, marginTop: 12 }}>
+                    <AnimatedShimmer style={{ width: '100%', height: 14, borderRadius: 4 }} />
+                    <AnimatedShimmer style={{ width: '80%', height: 14, borderRadius: 4 }} />
+                  </View>
+                  <View style={[styles.genreRow, { marginTop: 'auto' }]}>
+                    <AnimatedShimmer style={{ width: 50, height: 20, borderRadius: 999 }} />
+                    <AnimatedShimmer style={{ width: 60, height: 20, borderRadius: 999 }} />
+                  </View>
                 </View>
               </View>
-            </TouchableOpacity>
+            ) : (
+              <TouchableOpacity
+                style={styles.upcomingCard}
+                onPress={() => goToDetails(data.upcoming.id)}
+                activeOpacity={0.85}
+              >
+                <Image source={{ uri: data.upcoming.image }} style={styles.upcomingImg} resizeMode="cover" />
+                <View style={styles.upcomingInfo}>
+                  <Text style={styles.upcomingLabel}>Ep 1 airing in</Text>
+                  <Text style={styles.upcomingTime}>{data.upcoming.ep1Airing}</Text>
+                  {data.upcoming.source && (
+                    <Text style={styles.upcomingSource}>Source : {data.upcoming.source}</Text>
+                  )}
+                  <Text style={styles.upcomingTitle} numberOfLines={1}>{data.upcoming.title}</Text>
+                  <Text style={styles.upcomingSynopsis} numberOfLines={2}>{data.upcoming.synopsis}</Text>
+                  <View style={styles.genreRow}>
+                    {(data.upcoming.genres || []).map(g => (
+                      <View key={g} style={styles.genreChip}>
+                        <Text style={styles.genreText}>{g}</Text>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              </TouchableOpacity>
+            )}
           </View>
         )}
 
@@ -766,6 +954,33 @@ const styles = StyleSheet.create({
   animeCardTitleRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 5, paddingHorizontal: 2 },
   animeCardDot: { width: 6, height: 6, borderRadius: 3, marginTop: 3, flexShrink: 0 },
   animeCardTitle: { color: '#e5e7eb', fontSize: 11, fontWeight: '600', lineHeight: 15, flex: 1 },
+  subDubRow: {
+    position: 'absolute', bottom: 6, left: 5,
+    flexDirection: 'row', gap: 3,
+  },
+  subBadge: {
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    borderRadius: 4,
+    paddingHorizontal: 5, paddingVertical: 2,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
+  },
+  dubBadge: {
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    borderRadius: 4,
+    paddingHorizontal: 5, paddingVertical: 2,
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)',
+  },
+  subDubText: { color: '#ffffff', fontSize: 9, fontWeight: '700', letterSpacing: 0.5 },
+
+  // DiveBackInCard
+  diveCard: { width: 240 },
+  diveThumb: { width: 240, height: 135, borderRadius: 12, backgroundColor: '#1a1a1a', overflow: 'hidden', marginBottom: 8, position: 'relative' },
+  diveDurationBadge: { position: 'absolute', bottom: 16, right: 8, backgroundColor: 'rgba(0,0,0,0.8)', borderRadius: 4, paddingHorizontal: 6, paddingVertical: 3 },
+  diveDurationText: { color: '#fff', fontSize: 11, fontWeight: '600' },
+  diveProgBar: { position: 'absolute', bottom: 8, left: 8, right: 8, height: 4, backgroundColor: 'rgba(255,255,255,0.3)', borderRadius: 2, overflow: 'hidden' },
+  diveProgFill: { height: '100%', backgroundColor: '#fff', borderRadius: 2 },
+  diveAnimeTitle: { color: '#9ca3af', fontSize: 12, marginBottom: 2 },
+  diveEpTitle: { color: '#e5e7eb', fontSize: 14, fontWeight: '600' },
 
   // Skeleton
   skeletonCard: { width: 110, aspectRatio: 3 / 4.2, borderRadius: 12, backgroundColor: '#1a1a1a' },

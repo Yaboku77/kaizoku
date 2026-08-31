@@ -13,14 +13,15 @@ if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental
 import { WebView } from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { navigate } from '../navigation/RootNavigation';
 import { AnimatedShimmer } from '../components/SharedComponents';
-import { TMDB_API_KEY, saveToHistory, updateProgress, getPlayerPrefs, savePlayerPrefs, getList, saveToList, removeFromList } from '../data/constants';
+import { TMDB_API_KEY, tmdbFetch, saveToHistory, updateProgress, getPlayerPrefs, savePlayerPrefs, getList, saveToList, removeFromList } from '../data/constants';
 import { usePlayer } from '../context/PlayerContext';
 import { useAuth } from '../context/AuthContext';
 import { saveHistoryToCloud, updateProgressInCloud, saveListToCloud, removeFromListCloud, getReactionState, toggleReaction } from '../api/firestore';
 import { fetchAniListCommentsPreview } from '../api/anilist';
 import { scrapeSearch } from '../api/scrapers/search.scraper';
-import { scrapeWatch } from '../api/scrapers/watch.scraper';
+import { scrapeMergedWatch } from '../api/scrapers/merged.scraper';
 import { extractStreamUrl, extractVidstream } from '../api/extractors';
 import CommentsSheet from './CommentsSheet';
 
@@ -46,9 +47,9 @@ const TMDB_KEY = TMDB_API_KEY;
 const EPISODES_PER_PAGE = 25;
 // Preferred server order (from API: VidPlay-1, HD-1, Vidstream-2, VidCloud-1)
 // Server preference order — names must match what anikoto returns in the AJAX server list
-const PREFERRED_SERVERS = ['VidPlay', 'MegaPlay', 'HD-1', 'Vidstream', 'VidCloud', 'Kiwi Stream'];
+const PREFERRED_SERVERS = ['Vidstream', 'VidPlay', 'MegaPlay', 'HD-1', 'VidCloud', 'Kiwi Stream'];
 // Also check these substrings to match partial server names (case-insensitive)
-const PREFERRED_SERVER_PATTERNS = ['vidplay', 'megaplay', 'hd-1', 'vidstream', 'vidcloud', 'kiwi'];
+const PREFERRED_SERVER_PATTERNS = ['vidstream', 'vidplay', 'megaplay', 'hd-1', 'vidcloud', 'kiwi'];
 
 // ─── Episode Card (matches web EpisodeCard) ──────────────────────────────────
 function EpisodeCard({ ep, isActive, coverImage, onPress }) {
@@ -62,7 +63,7 @@ function EpisodeCard({ ep, isActive, coverImage, onPress }) {
       {/* Thumbnail */}
       <View style={S.epThumb}>
         <Image
-          source={{ uri: ep.still_path ? `https://image.tmdb.org/t/p/w300${ep.still_path}` : coverImage }}
+          source={{ uri: ep.still_path ? `https://tmdb-proxy.bgtoons.workers.dev/t/p/w300${ep.still_path}` : coverImage }}
           style={StyleSheet.absoluteFill}
           resizeMode="cover"
           onError={() => { }}
@@ -202,7 +203,7 @@ function SettingsSlider({ label, value, min, max, step, onChange, formatValue })
   );
 }
 
-function PlayerScreenInner() {
+const PlayerScreenInner = () => {
   const insets = useSafeAreaInsets();
   const insetsRef = useRef(insets);
   useEffect(() => { insetsRef.current = insets; }, [insets]);
@@ -217,6 +218,7 @@ function PlayerScreenInner() {
     animeId,
     animeTitle,
     coverImage,
+    bannerImage,
     nativeTitle,
     synonyms = [],
     description,
@@ -269,7 +271,7 @@ function PlayerScreenInner() {
             const nextAiringEpisode = m.nextAiringEpisode?.episode;
             const aniYear = m.startDate?.year;
 
-            const searchRes = await fetch(`https://api.themoviedb.org/3/search/tv?api_key=${TMDB_KEY}&query=${encodeURIComponent(title)}`);
+            const searchRes = await tmdbFetch(`https://api.themoviedb.org/3/search/tv?api_key=${TMDB_KEY}&query=${encodeURIComponent(title)}`);
             const searchData = await searchRes.json();
 
             let allEps = [];
@@ -288,7 +290,7 @@ function PlayerScreenInner() {
               });
 
               const tmdbId = bestShow.id;
-              const tvRes = await fetch(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_KEY}`);
+              const tvRes = await tmdbFetch(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_KEY}`);
               const tvData = await tvRes.json();
               const seasons = tvData.seasons?.filter(s => s.season_number > 0) || [];
 
@@ -324,7 +326,7 @@ function PlayerScreenInner() {
               }
 
               const seasonResults = await Promise.all(
-                seasonsToFetch.map(sn => fetch(`https://api.themoviedb.org/3/tv/${tmdbId}/season/${sn}?api_key=${TMDB_KEY}`).then(r => r.json()))
+                seasonsToFetch.map(sn => tmdbFetch(`https://api.themoviedb.org/3/tv/${tmdbId}/season/${sn}?api_key=${TMDB_KEY}`).then(r => r.json()))
               );
 
               seasonResults.forEach(sd => { if (sd.episodes) allEps = allEps.concat(sd.episodes); });
@@ -366,6 +368,7 @@ function PlayerScreenInner() {
   const [streamUrl, setStreamUrl] = useState(null);
   const [isStreamLoading, setIsStreamLoading] = useState(true);
   const [isVideoLoading, setIsVideoLoading] = useState(true);
+  const [mediaStats, setMediaStats] = useState(null);
 
   // Native JSX Player states
   const [isPlaying, setIsPlaying] = useState(false);
@@ -1009,6 +1012,12 @@ function PlayerScreenInner() {
   const [isCommentsOpen, setIsCommentsOpen] = useState(false);
   const activeTypeRef = useRef('sub');
 
+  useEffect(() => {
+    if (data?.openComments) {
+      setTimeout(() => setIsCommentsOpen(true), 500);
+    }
+  }, [data?.openComments]);
+
   const [savedStatus, setSavedStatus] = useState(null);
   const [isSaveMenuOpen, setIsSaveMenuOpen] = useState(false);
   const [recentReleases, setRecentReleases] = useState([]);
@@ -1242,10 +1251,11 @@ function PlayerScreenInner() {
     });
     // Save initial history entry (local + cloud)
     const historyEntry = {
-      animeId, animeTitle, coverImage,
+      animeId, animeTitle, coverImage, bannerImage,
       episodeIndex: currentEpIdx,
       episodeTitle: episodes[currentEpIdx]?.name || `Episode ${currentEpIdx + 1}`,
       totalEpisodes: episodes.length,
+      episodeImage: episodes[currentEpIdx]?.still_path ? `https://tmdb-proxy.bgtoons.workers.dev/t/p/original${episodes[currentEpIdx].still_path}` : null,
     };
     saveToHistory(historyEntry);
     if (user?.uid) {
@@ -1299,7 +1309,7 @@ function PlayerScreenInner() {
       console.log(`[DEBUG] Searching for animeTitle: ${animeTitle}`);
       let searchData = await scrapeSearch(animeTitle);
 
-      if (!searchData?.results?.length && animeTitle.includes(':')) {
+      if (!searchData?.results?.length && animeTitle?.includes(':')) {
         const shortTitle = animeTitle.split(':')[0].trim();
         console.log(`[DEBUG] Fallback searching shortTitle: ${shortTitle}`);
         searchData = await scrapeSearch(shortTitle);
@@ -1452,9 +1462,42 @@ function PlayerScreenInner() {
         }
 
         if (chosen) {
-          hasStartedPlaying = true;
           const resolvedType = chosen.type === 'dub' ? 'dub' : 'sub';
 
+          let streamSrc = chosen.m3u8;
+          try {
+            if (!streamSrc && chosen.url && !chosen.url.includes('.m3u8')) {
+              const serverNameLower = (chosen.server || '').toLowerCase();
+              const isVidstreamLike = serverNameLower.includes('vidstream') || serverNameLower.includes('vidplay') || serverNameLower.includes('vid-');
+              let extracted = isVidstreamLike ? await extractVidstream(chosen.url, chosen.referer).catch(() => null) : null;
+              if (!extracted) {
+                extracted = await extractStreamUrl(chosen.url).catch(e => {
+                  console.log('Local extractStreamUrl failed:', e);
+                  return null;
+                });
+              }
+              if (extracted) {
+                streamSrc = extracted.m3u8;
+                chosen.m3u8 = extracted.m3u8;
+                if (extracted.referer) chosen.referer = extracted.referer;
+                if (extracted.tracks) chosen.tracks = extracted.tracks;
+                if (extracted.intro) chosen.intro = extracted.intro;
+                if (extracted.outro) chosen.outro = extracted.outro;
+                if (extracted.allSources) chosen.allSources = extracted.allSources;
+              }
+            } else if (!streamSrc && chosen.url) {
+              streamSrc = chosen.url;
+            }
+          } catch (e) {
+            console.log('Extraction error in processData:', e);
+          }
+
+          if (!streamSrc || (!streamSrc.includes('.m3u8') && !streamSrc.includes('.mp4'))) {
+            if (!isFinal) return; // wait for background eagerTasks to finish and trigger another onPartial
+          }
+
+          hasStartedPlaying = true;
+          
           // KEEP user's selected preference in UI
           setActiveType(userPrefType);
           activeTypeRef.current = userPrefType;
@@ -1472,25 +1515,6 @@ function PlayerScreenInner() {
           if (!currentServer || currentServer !== chosen.server) {
             autoServerChangeRef.current = true;
             setCurrentServer(chosen.server || '');
-          }
-
-          let streamSrc = chosen.m3u8;
-          if (!streamSrc && chosen.url && !chosen.url.includes('.m3u8')) {
-            const serverNameLower = (chosen.server || '').toLowerCase();
-            const isVidstreamLike = serverNameLower.includes('vidstream') || serverNameLower.includes('vidplay') || serverNameLower.includes('vid-');
-            let extracted = isVidstreamLike ? await extractVidstream(chosen.url, chosen.referer).catch(() => null) : null;
-            if (!extracted) extracted = await extractStreamUrl(chosen.url);
-            if (extracted) {
-              streamSrc = extracted.m3u8;
-              chosen.m3u8 = extracted.m3u8;
-              if (extracted.referer) chosen.referer = extracted.referer;
-              if (extracted.tracks) chosen.tracks = extracted.tracks;
-              if (extracted.intro) chosen.intro = extracted.intro;
-              if (extracted.outro) chosen.outro = extracted.outro;
-              if (extracted.allSources) chosen.allSources = extracted.allSources;
-            }
-          } else if (!streamSrc && chosen.url) {
-            streamSrc = chosen.url;
           }
 
           const tracks = chosen.tracks || [];
@@ -1513,16 +1537,22 @@ function PlayerScreenInner() {
         }
       };
 
-      const finalData = await scrapeWatch(slug, String(epNum), processData, idMal);
+      const finalData = await scrapeMergedWatch(String(animeId), slug, String(epNum), processData, idMal);
       await processData(finalData, true);
 
       if (!hasStartedPlaying) {
         console.log('[DEBUG] No playable source found. All extraction failed.');
-        setTimeout(() => setIsStreamLoading(false), 4000);
+        setTimeout(() => {
+          setIsStreamLoading(false);
+          setIsVideoLoading(false);
+        }, 4000);
       }
     } catch (e) {
       console.log('Stream fetch error:', e);
-      setTimeout(() => setIsStreamLoading(false), 4000);
+      setTimeout(() => {
+        setIsStreamLoading(false);
+        setIsVideoLoading(false);
+      }, 4000);
     }
   }, [animeTitle, currentEpIdx, nativeTitle, synonyms, currentServer, idMal]);
 
@@ -1621,6 +1651,41 @@ vid.addEventListener('timeupdate',function(){
 vid.addEventListener('loadedmetadata',function(){
   rn('loaded', {duration:vid.duration});
 });
+setInterval(function() {
+  if (hls && vid) {
+    var lvl = hls.currentLevel;
+    if (lvl === -1) lvl = hls.loadLevel;
+    
+    var level = null;
+    if (lvl >= 0 && hls.levels && hls.levels.length > lvl) {
+      level = hls.levels[lvl];
+    } else if (vid.videoHeight && hls.levels) {
+      for (var i = 0; i < hls.levels.length; i++) {
+        if (hls.levels[i].height === vid.videoHeight || hls.levels[i].width === vid.videoWidth) {
+          level = hls.levels[i];
+          break;
+        }
+      }
+    }
+    
+    var b = level ? (level.bitrate || 0) : 0;
+    var h = level ? (level.height || vid.videoHeight || 0) : (vid.videoHeight || 0);
+    
+    rn('mediaStats', {
+      bitrate: b,
+      height: h,
+      format: 'HLS',
+      duration: vid.duration || 0
+    });
+  } else if (vid && vid.src) {
+    rn('mediaStats', {
+      format: vid.src.includes('.m3u8') ? 'HLS (Native)' : 'MP4',
+      height: vid.videoHeight || 0,
+      duration: vid.duration || 0,
+      bitrate: 0
+    });
+  }
+}, 2000);
 
 if ('mediaSession' in navigator) {
   try {
@@ -1784,22 +1849,37 @@ loadSrc(src);
       setIsVideoLoading(true);
 
       let streamSrc = chosen.m3u8;
-      if (!streamSrc && chosen.url && !chosen.url.includes('.m3u8')) {
-        const serverNameLower = (chosen.server || '').toLowerCase();
-        const isVidstreamLike = serverNameLower.includes('vidstream') || serverNameLower.includes('vidplay') || serverNameLower.includes('vid-');
-        let extracted = isVidstreamLike ? await extractVidstream(chosen.url, chosen.referer).catch(() => null) : null;
-        if (!extracted) extracted = await extractStreamUrl(chosen.url);
-        if (extracted) {
-          streamSrc = extracted.m3u8;
-          chosen.m3u8 = extracted.m3u8;
-          if (extracted.referer) chosen.referer = extracted.referer;
-          if (extracted.tracks) chosen.tracks = extracted.tracks;
-          if (extracted.intro) chosen.intro = extracted.intro;
-          if (extracted.outro) chosen.outro = extracted.outro;
-          if (extracted.allSources) chosen.allSources = extracted.allSources;
+      try {
+        if (!streamSrc && chosen.url && !chosen.url.includes('.m3u8')) {
+          const serverNameLower = (chosen.server || '').toLowerCase();
+          const isVidstreamLike = serverNameLower.includes('vidstream') || serverNameLower.includes('vidplay') || serverNameLower.includes('vid-');
+          let extracted = isVidstreamLike ? await extractVidstream(chosen.url, chosen.referer).catch(() => null) : null;
+          if (!extracted) {
+            extracted = await extractStreamUrl(chosen.url).catch(e => {
+              console.log('Local extractStreamUrl failed:', e);
+              return null;
+            });
+          }
+          if (extracted) {
+            streamSrc = extracted.m3u8;
+            chosen.m3u8 = extracted.m3u8;
+            if (extracted.referer) chosen.referer = extracted.referer;
+            if (extracted.tracks) chosen.tracks = extracted.tracks;
+            if (extracted.intro) chosen.intro = extracted.intro;
+            if (extracted.outro) chosen.outro = extracted.outro;
+            if (extracted.allSources) chosen.allSources = extracted.allSources;
+          }
+        } else if (!streamSrc && chosen.url) {
+          streamSrc = chosen.url;
         }
-      } else if (!streamSrc && chosen.url) {
-        streamSrc = chosen.url;
+      } catch (e) {
+        console.log('Extraction error in toggleDub:', e);
+      }
+
+      if (!streamSrc || (!streamSrc.includes('.m3u8') && !streamSrc.includes('.mp4'))) {
+        setIsVideoLoading(false);
+        Alert.alert('Playback Error', 'Failed to extract stream for this server.');
+        return;
       }
 
       const tracks = chosen.tracks || [];
@@ -1841,22 +1921,37 @@ loadSrc(src);
     setIsVideoLoading(true);
 
     let streamSrc = chosen.m3u8;
-    if (!streamSrc && chosen.url && !chosen.url.includes('.m3u8')) {
-      const serverNameLower = (chosen.server || '').toLowerCase();
-      const isVidstreamLike = serverNameLower.includes('vidstream') || serverNameLower.includes('vidplay') || serverNameLower.includes('vid-');
-      let extracted = isVidstreamLike ? await extractVidstream(chosen.url, chosen.referer).catch(() => null) : null;
-      if (!extracted) extracted = await extractStreamUrl(chosen.url);
-      if (extracted) {
-        streamSrc = extracted.m3u8;
-        chosen.m3u8 = extracted.m3u8;
-        if (extracted.referer) chosen.referer = extracted.referer;
-        if (extracted.tracks) chosen.tracks = extracted.tracks;
-        if (extracted.intro) chosen.intro = extracted.intro;
-        if (extracted.outro) chosen.outro = extracted.outro;
-        if (extracted.allSources) chosen.allSources = extracted.allSources;
+    try {
+      if (!streamSrc && chosen.url && !chosen.url.includes('.m3u8')) {
+        const serverNameLower = (chosen.server || '').toLowerCase();
+        const isVidstreamLike = serverNameLower.includes('vidstream') || serverNameLower.includes('vidplay') || serverNameLower.includes('vid-');
+        let extracted = isVidstreamLike ? await extractVidstream(chosen.url, chosen.referer).catch(() => null) : null;
+        if (!extracted) {
+          extracted = await extractStreamUrl(chosen.url).catch(e => {
+            console.log('Local extractStreamUrl failed:', e);
+            return null;
+          });
+        }
+        if (extracted) {
+          streamSrc = extracted.m3u8;
+          chosen.m3u8 = extracted.m3u8;
+          if (extracted.referer) chosen.referer = extracted.referer;
+          if (extracted.tracks) chosen.tracks = extracted.tracks;
+          if (extracted.intro) chosen.intro = extracted.intro;
+          if (extracted.outro) chosen.outro = extracted.outro;
+          if (extracted.allSources) chosen.allSources = extracted.allSources;
+        }
+      } else if (!streamSrc && chosen.url) {
+        streamSrc = chosen.url;
       }
-    } else if (!streamSrc && chosen.url) {
-      streamSrc = chosen.url;
+    } catch (e) {
+      console.log('Extraction error in handleServerChange:', e);
+    }
+
+    if (!streamSrc || (!streamSrc.includes('.m3u8') && !streamSrc.includes('.mp4'))) {
+      setIsVideoLoading(false);
+      Alert.alert('Playback Error', 'Failed to extract stream for this server.');
+      return;
     }
 
     const tracks = chosen.tracks || [];
@@ -2225,6 +2320,12 @@ loadSrc(src);
               />
             </TouchableOpacity>
           ))}
+          <TouchableOpacity style={S.settingsRow} onPress={() => setActiveMenu('media_stats')} activeOpacity={0.7}>
+            <Ionicons name="stats-chart-outline" size={20} color="#9ca3af" />
+            <Text style={[S.settingsRowText, { color: '#e5e7eb', fontSize: 15, fontWeight: '500', marginLeft: 12 }]}>Media Stats</Text>
+            <View style={{ flex: 1 }} />
+            <Ionicons name="chevron-forward" size={16} color="#6b7280" style={{ marginLeft: 4 }} />
+          </TouchableOpacity>
           {/* Audio Boost slider */}
           <View style={{ paddingHorizontal: 12, paddingVertical: 12 }}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 12 }}>
@@ -2255,6 +2356,34 @@ loadSrc(src);
           </View>
         </View>
       )}
+
+      {/* ── MEDIA STATS SUBMENU ── */}
+      {activeMenu === 'media_stats' && (
+        <View style={{ padding: 16 }}>
+          {mediaStats ? (
+            <View style={{ gap: 16 }}>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', borderBottomWidth: 1, borderBottomColor: '#1a1a1a', paddingBottom: 12 }}>
+                <Text style={{ color: '#9ca3af', fontSize: 15 }}>Format</Text>
+                <Text style={{ color: '#fff', fontSize: 15, fontWeight: '500' }}>{mediaStats.format || 'Unknown'}</Text>
+              </View>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', borderBottomWidth: 1, borderBottomColor: '#1a1a1a', paddingBottom: 12 }}>
+                <Text style={{ color: '#9ca3af', fontSize: 15 }}>Quality</Text>
+                <Text style={{ color: '#fff', fontSize: 15, fontWeight: '500' }}>{mediaStats.height ? `${mediaStats.height}p` : 'Unknown'}</Text>
+              </View>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', borderBottomWidth: 1, borderBottomColor: '#1a1a1a', paddingBottom: 12 }}>
+                <Text style={{ color: '#9ca3af', fontSize: 15 }}>Bitrate</Text>
+                <Text style={{ color: '#fff', fontSize: 15, fontWeight: '500' }}>{mediaStats.bitrate ? `${(mediaStats.bitrate / 1000000).toFixed(2)} Mbps` : 'Unknown'}</Text>
+              </View>
+              <View style={{ flexDirection: 'row', justifyContent: 'space-between', paddingBottom: 8 }}>
+                <Text style={{ color: '#9ca3af', fontSize: 15 }}>Stream Size (Est.)</Text>
+                <Text style={{ color: '#fff', fontSize: 15, fontWeight: '500' }}>{mediaStats.bitrate && mediaStats.duration ? `${((mediaStats.bitrate * mediaStats.duration) / 8000000).toFixed(2)} MB` : 'Unknown'}</Text>
+              </View>
+            </View>
+          ) : (
+            <Text style={{ color: '#9ca3af', fontSize: 14, textAlign: 'center', marginVertical: 20 }}>Stats not available yet.</Text>
+          )}
+        </View>
+      )}
     </>
   );
 
@@ -2279,7 +2408,7 @@ loadSrc(src);
         isInPip && { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, width: '100%', height: '100%', zIndex: 9999 },
       ]}>
         {/* Animated Inner Video Layer — ONLY the video translates up & down */}
-        <Animated.View style={[StyleSheet.absoluteFill, { overflow: 'hidden', backgroundColor: '#000', transformOrigin: 'bottom', transform: [{ translateY: streamTranslateY }, { scale: streamScale }] }]}>
+        <Animated.View style={[StyleSheet.absoluteFill, { overflow: 'hidden', backgroundColor: '#000', transform: [{ translateY: streamTranslateY }, { scale: streamScale }] }]}>
           {streamUrl ? (
             <View style={{ flex: 1, backgroundColor: '#000' }}>
               <WebView
@@ -2410,6 +2539,8 @@ loadSrc(src);
                       togglePlayPause(true);
                     } else if (msg.type === 'mediaSessionPause') {
                       togglePlayPause(false);
+                    } else if (msg.type === 'mediaStats') {
+                      setMediaStats(msg.payload);
                     } else if (msg.type === 'qualities') {
                       const rawLevels = Array.isArray(msg.payload) ? msg.payload : (msg.payload?.levels || []);
                       const seen = new Set();
@@ -2871,7 +3002,10 @@ loadSrc(src);
                       <TouchableOpacity
                         key={`rel-${rel.id}`}
                         style={S.relCard}
-                        onPress={() => navigation.navigate('Details', { animeId: rel.id })}
+                        onPress={() => {
+                          minimize();
+                          navigate('Details', { animeId: rel.id });
+                        }}
                         activeOpacity={0.85}
                       >
                         <Image source={{ uri: rel.coverImage }} style={S.relImg} resizeMode="cover" />
@@ -2896,7 +3030,10 @@ loadSrc(src);
                       <TouchableOpacity
                         key={`rec-${rec.id}`}
                         style={S.relCard}
-                        onPress={() => navigation.navigate('Details', { animeId: rec.id })}
+                        onPress={() => {
+                          minimize();
+                          navigate('Details', { animeId: rec.id });
+                        }}
                         activeOpacity={0.85}
                       >
                         <Image source={{ uri: rec.coverImage }} style={[S.relImg, { width: 72, height: 100 }]} resizeMode="cover" />

@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tmdb-proxy",
+  "main": "src/index.ts",
+  "compatibility_date": "2024-04-05",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "vars": {
+    "TMDB_API_BASE_URL": "https://api.themoviedb.org",
+    "TMDB_API_KEY": "3dfa4bae246f35044e56a6dcd3294e3f",
+    "PROXY_SECRET": "kaizoku_secret_key_123"
+  }
+}

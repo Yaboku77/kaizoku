@@ -1,9 +1,9 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Image, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useFocusEffect } from '@react-navigation/native';
-import { getHistory, clearHistory, getList } from '../data/constants';
+import { getHistory, clearHistory, getList, getCachedTmdbEpisodeImage } from '../data/constants';
 import { usePlayer } from '../context/PlayerContext';
 import { useAuth } from '../context/AuthContext';
 import { useAuthModal } from '../context/AuthModalContext';
@@ -12,16 +12,37 @@ import EditProfileModal from './EditProfileModal';
 
 // ─── History card ─────────────────────────────────────────────────────────────
 function HistoryCard({ item, onPress }) {
+  const [imageUri, setImageUri] = useState(item.episodeImage || item.bannerImage || item.coverImage);
   const pct = item.duration > 0 ? Math.min(100, Math.round((item.progress / item.duration) * 100)) : 0;
+  
+  useEffect(() => {
+    if (!item.episodeImage) {
+      getCachedTmdbEpisodeImage(item.animeTitle, item.episodeIndex).then(uri => {
+        if (uri !== 'NOT_FOUND') setImageUri(uri);
+      });
+    }
+  }, [item.animeTitle, item.episodeIndex, item.episodeImage]);
+
+  const formatTime = (seconds) => {
+    if (!seconds) return '00:00';
+    const m = Math.floor(seconds / 60);
+    const s = Math.floor(seconds % 60);
+    return `${m}:${s < 10 ? '0' : ''}${s}`;
+  };
+
   return (
     <TouchableOpacity style={ST.hCard} onPress={onPress} activeOpacity={0.75}>
       <View style={ST.hThumb}>
-        <Image source={{ uri: item.coverImage }} style={StyleSheet.absoluteFill} resizeMode="cover" />
-        {pct > 0 && <View style={ST.hPctBadge}><Text style={ST.hPctText}>{pct}%</Text></View>}
-        <View style={ST.hProgBar}><View style={[ST.hProgFill, { width: `${pct}%` }]} /></View>
+        <Image source={{ uri: imageUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+        <View style={ST.hDurationBadge}>
+          <Text style={ST.hDurationText}>{formatTime(item.duration)}</Text>
+        </View>
+        <View style={ST.hProgBar}>
+          <View style={[ST.hProgFill, { width: `${pct}%` }]} />
+        </View>
       </View>
-      <Text style={ST.hTitle} numberOfLines={1}>{item.animeTitle}</Text>
-      <Text style={ST.hEp} numberOfLines={1}>{item.episodeTitle || `Episode ${item.episodeIndex + 1}`}</Text>
+      <Text style={ST.hAnimeTitle} numberOfLines={1}>{item.animeTitle}</Text>
+      <Text style={ST.hEpTitle} numberOfLines={1}>{item.episodeTitle || `Episode ${item.episodeIndex + 1}`}</Text>
     </TouchableOpacity>
   );
 }
@@ -330,12 +351,16 @@ const ST = StyleSheet.create({
   emptySubText:   { color: '#374151', fontSize: 12 },
 
   // Cards
-  hCard:          { width: 130 },
-  hThumb:         { width: 130, height: 80, borderRadius: 8, backgroundColor: '#1a1a1a', overflow: 'hidden', marginBottom: 7, position: 'relative' },
+  hCard:          { width: 240 },
+  hThumb:         { width: 240, height: 135, borderRadius: 12, backgroundColor: '#1a1a1a', overflow: 'hidden', marginBottom: 8, position: 'relative' },
+  hDurationBadge: { position: 'absolute', bottom: 16, right: 8, backgroundColor: 'rgba(0,0,0,0.8)', borderRadius: 4, paddingHorizontal: 6, paddingVertical: 3 },
+  hDurationText:  { color: '#fff', fontSize: 11, fontWeight: '600' },
+  hProgBar:       { position: 'absolute', bottom: 8, left: 8, right: 8, height: 4, backgroundColor: 'rgba(255,255,255,0.3)', borderRadius: 2, overflow: 'hidden' },
+  hProgFill:      { height: '100%', backgroundColor: '#fff', borderRadius: 2 },
+  hAnimeTitle:    { color: '#9ca3af', fontSize: 12, marginBottom: 2 },
+  hEpTitle:       { color: '#e5e7eb', fontSize: 14, fontWeight: '600' },
   hPctBadge:      { position: 'absolute', top: 5, right: 5, backgroundColor: 'rgba(0,0,0,0.75)', borderRadius: 4, paddingHorizontal: 5, paddingVertical: 2 },
   hPctText:       { color: '#fff', fontSize: 9, fontWeight: '700' },
-  hProgBar:       { position: 'absolute', bottom: 0, left: 0, right: 0, height: 3, backgroundColor: 'rgba(255,255,255,0.15)' },
-  hProgFill:      { height: '100%', backgroundColor: '#fff', borderRadius: 1 },
   hTitle:         { color: '#e5e7eb', fontSize: 12, fontWeight: '600', marginBottom: 2 },
   hEp:            { color: '#6b7280', fontSize: 11 },
 

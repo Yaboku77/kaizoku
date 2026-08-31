@@ -115,3 +115,55 @@ export async function scrapeListingPage(
 
   return { results, currentPage: page, hasNextPage };
 }
+
+// ─── Sub/Dub lookup for a list of titles ─────────────────────────────────────
+
+function normTitle(t: string): string {
+  return t.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * Given a list of anime titles, searches anikoto for each and returns
+ * a map of { normalizedTitle -> { hasSub, hasDub } }.
+ *
+ * To keep requests minimal we group titles into batches and search each title
+ * individually but fire them all in parallel (capped at 10 concurrent).
+ */
+export async function scrapeSubDubForTitles(
+  titles: string[]
+): Promise<Record<string, { hasSub: boolean; hasDub: boolean }>> {
+  const map: Record<string, { hasSub: boolean; hasDub: boolean }> = {};
+  if (!titles.length) return map;
+
+  const unique = [...new Set(titles)];
+
+  // Fire searches in batches of 10 concurrent requests
+  const BATCH = 10;
+  for (let i = 0; i < unique.length; i += BATCH) {
+    const batch = unique.slice(i, i + BATCH);
+    await Promise.all(
+      batch.map(async (title) => {
+        try {
+          const $ = await fetchPage(`/filter?keyword=${encodeURIComponent(title)}`);
+          const results = parseAnimeGrid(
+            $,
+            '.film_list-wrap .flw-item, .ani.items .item, .items.flw-wrap .flw-item, #list-items .item, .page-content .item, .flw-item, .item'
+          );
+          const norm = normTitle(title);
+          // Try to find best match by normalized title
+          const match = results.find(r => normTitle(r.title) === norm) || results[0];
+          if (match) {
+            map[norm] = {
+              hasSub: (match.episodes?.sub ?? 0) > 0,
+              hasDub: (match.episodes?.dub ?? 0) > 0,
+            };
+          }
+        } catch {
+          // ignore individual failures
+        }
+      })
+    );
+  }
+
+  return map;
+}
