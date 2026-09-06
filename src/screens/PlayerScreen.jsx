@@ -1166,8 +1166,18 @@ const PlayerScreenInner = () => {
     if (Platform.OS !== 'web') {
       try {
         if (nextState) {
+          if (Platform.OS === 'android' && NativeModules.PipActions) {
+            try {
+              NativeModules.PipActions.setImmersiveMode(true);
+            } catch (e) {}
+          }
           await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
         } else {
+          if (Platform.OS === 'android' && NativeModules.PipActions) {
+            try {
+              NativeModules.PipActions.setImmersiveMode(false);
+            } catch (e) {}
+          }
           await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
         }
       } catch (e) {
@@ -1497,7 +1507,7 @@ const PlayerScreenInner = () => {
           }
 
           hasStartedPlaying = true;
-          
+
           // KEEP user's selected preference in UI
           setActiveType(userPrefType);
           activeTypeRef.current = userPrefType;
@@ -2393,7 +2403,7 @@ loadSrc(src);
         { position: 'absolute', zIndex: 1000 },
         (isMinimized && !isInPip)
           ? { left: miniPan.x, top: miniPan.y, width: 220, height: 220 * 9 / 16, borderRadius: 12, overflow: 'hidden', backgroundColor: '#000', elevation: 10, shadowColor: '#000', shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8 }
-          : { top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#050505', paddingTop: (isFullscreen || isInPip) ? 0 : Math.max(insets.top, 24) }
+          : { top: 0, left: 0, right: 0, bottom: 0, backgroundColor: '#050505', paddingTop: (isFullscreen || isInPip) ? 0 : Math.max(insets.top, 24), elevation: 1000 }
       ]}
       {...((isMinimized && !isInPip) ? miniPlayerPanResponder.panHandlers : {})}
     >
@@ -2402,6 +2412,7 @@ loadSrc(src);
       {/* ── VIDEO PLAYER ─────────────────────────────────────────────────────────── */}
       <View style={[
         S.videoOuter,
+        !isFullscreen && { aspectRatio: 16 / 9 },
         isFullscreen && { width: '100%', height: '100%', position: 'absolute', top: 0, left: 0, bottom: 0, right: 0, zIndex: 1000 },
         prefs.ambientMode && !isInPip && { shadowColor: '#fff', shadowOpacity: 0.15, shadowRadius: 30, elevation: 15 },
         // When in native PiP, expand the video to fill the entire window (OS clips it)
@@ -3318,7 +3329,7 @@ export default function PlayerScreen() {
 const S = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#050505' },
   videoOuter: {
-    width: '100%', aspectRatio: 16 / 9, backgroundColor: '#000',
+    width: '100%', backgroundColor: '#000',
     shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.8, shadowRadius: 30,
     zIndex: 50, elevation: 15,
   },
