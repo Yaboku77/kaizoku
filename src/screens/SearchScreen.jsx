@@ -5,6 +5,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { scrapeSubDubForTitles } from '../api/scrapers/search.scraper';
 
 export default function SearchScreen({ navigation }) {
   const insets = useSafeAreaInsets();
@@ -12,6 +13,8 @@ export default function SearchScreen({ navigation }) {
   const [searchResults, setSearchResults] = useState([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const searchDebounceRef = useRef(null);
+  // Incremented on every new search so stale enrichments can be discarded
+  const enrichGenRef = useRef(0);
 
   return (
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
@@ -51,14 +54,30 @@ export default function SearchScreen({ navigation }) {
                       });
                       const json = await res.json();
                       const results = json.data?.Page?.media || [];
-                      setSearchResults(results.map(m => ({
+                      const mapped = results.map(m => ({
                         id: m.id,
                         title: m.title.english || m.title.romaji,
                         image: m.coverImage.medium,
                         type: m.format === 'TV' ? 'TV Show' : (m.format || 'TV'),
                         year: m.seasonYear,
                         status: m.status,
-                      })));
+                      }));
+                      setSearchResults(mapped);
+                      // Enrich with sub/dub from anikoto (fire-and-forget)
+                      // Capture current generation so stale enrichments are discarded
+                      const myGen = ++enrichGenRef.current;
+                      const norm = (t) => t.toLowerCase().replace(/[^a-z0-9]/g, '');
+                      scrapeSubDubForTitles(mapped.map(c => c.title))
+                        .then(subDubMap => {
+                          // Discard if a newer search already ran
+                          if (enrichGenRef.current !== myGen) return;
+                          setSearchResults(prev => prev.map(c => {
+                            if (c.hasSub !== undefined || c.hasDub !== undefined) return c;
+                            const info = subDubMap[norm(c.title)];
+                            return info ? { ...c, hasSub: info.hasSub, hasDub: info.hasDub } : c;
+                          }));
+                        })
+                        .catch(() => {});
                     } catch (_) { setSearchResults([]); }
                     finally { setSearchLoading(false); }
                   }, 400);
@@ -99,7 +118,23 @@ export default function SearchScreen({ navigation }) {
                     }}
                     activeOpacity={0.7}
                   >
-                    <Image source={{ uri: anime.image }} style={{ width: 40, height: 56, borderRadius: 8, backgroundColor: '#222' }} resizeMode="cover" />
+                    <View style={{ width: 40, height: 56, borderRadius: 8, backgroundColor: '#222', overflow: 'hidden' }}>
+                      <Image source={{ uri: anime.image }} style={{ width: 40, height: 56 }} resizeMode="cover" />
+                      {(anime.hasSub || anime.hasDub) && (
+                        <View style={{ position: 'absolute', bottom: 3, left: 2, flexDirection: 'row', gap: 2 }}>
+                          {anime.hasSub && (
+                            <View style={{ backgroundColor: 'rgba(0,0,0,0.8)', borderRadius: 3, paddingHorizontal: 3, paddingVertical: 1 }}>
+                              <Text style={{ color: '#fff', fontSize: 7, fontWeight: '700', letterSpacing: 0.4 }}>SUB</Text>
+                            </View>
+                          )}
+                          {anime.hasDub && (
+                            <View style={{ backgroundColor: 'rgba(0,0,0,0.8)', borderRadius: 3, paddingHorizontal: 3, paddingVertical: 1 }}>
+                              <Text style={{ color: '#fff', fontSize: 7, fontWeight: '700', letterSpacing: 0.4 }}>DUB</Text>
+                            </View>
+                          )}
+                        </View>
+                      )}
+                    </View>
                     <View style={{ flex: 1 }}>
                       <Text style={{ color: '#e5e7eb', fontSize: 14, fontWeight: '600' }} numberOfLines={1}>{anime.title}</Text>
                       <Text style={{ color: '#6b7280', fontSize: 12, marginTop: 2 }}>{[anime.type, anime.year].filter(Boolean).join(' • ')}</Text>

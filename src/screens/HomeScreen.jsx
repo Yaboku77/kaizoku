@@ -15,6 +15,7 @@ import { useAuth } from '../context/AuthContext';
 import { HOME_QUERY } from '../data/queries';
 import { SCREENSHOT_FALLBACK_DATA, FALLBACK_COMMENTS } from '../data/mockData';
 import { scrapeSubDubForTitles } from '../api/scrapers/search.scraper';
+import { fetchInlineStream } from '../api/scrapers/inlineStream';
 
 const { width, height } = Dimensions.get('window');
 const HERO_HEIGHT = height * 0.72;
@@ -23,7 +24,7 @@ const HERO_HEIGHT = height * 0.72;
 function DiveBackInCard({ item, onPress }) {
   const [imageUri, setImageUri] = useState(item.episodeImage || item.bannerImage || item.coverImage);
   const pct = item.duration > 0 ? Math.min(100, Math.round((item.progress / item.duration) * 100)) : 0;
-  
+
   useEffect(() => {
     if (!item.episodeImage) {
       getCachedTmdbEpisodeImage(item.animeTitle, item.episodeIndex).then(uri => {
@@ -136,21 +137,163 @@ function CommentCard({ comment }) {
   );
 }
 
-// ─── VideoReleaseCard (matches web: aspect-video thumb + avatar info row below) ──
-function VideoReleaseCard({ anime, onPress }) {
+// ─── InlineVideoCard ─────────────────────────────────────────────────────────
+// YouTube-style inline preview: shows thumbnail at rest, auto-plays on activation.
+// Only one card plays at a time via activeVideoId / onActivate.
+function InlineVideoCard({ anime, onPress, isActive, onActivate }) {
+  const videoRef = useRef(null);
+  const [streamUrl, setStreamUrl] = useState(null);
+  const [streamError, setStreamError] = useState(false);
+  const [isLoading, setIsLoading] = useState(false);
+  const [isMuted, setIsMuted] = useState(true);
+  const mountedRef = useRef(true);
+
+  // Stable values — no closure issues
+  const animeId = String(anime.id);
+  const epNum = String(anime.epIndex != null ? anime.epIndex + 1 : 1);
+  const cardKey = `${animeId}-${epNum}`;
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  // When activated: fetch stream (VidStreaming 2 / MegaFlix first, MegaPlay fallback)
+  useEffect(() => {
+    if (!isActive) {
+      // Pause and reset when deactivated
+      videoRef.current?.pauseAsync().catch(() => { });
+      setStreamUrl(null);
+      setStreamError(false);
+      setIsLoading(false);
+      setIsMuted(true);
+      return;
+    }
+
+    // Already have a stream URL — nothing to do, Video shouldPlay will handle it
+    if (streamUrl) return;
+
+    let cancelled = false;
+    setIsLoading(true);
+    setStreamError(false);
+
+    // ── Fetch stream: MegaFlix (VidStreaming 2) first, MegaPlay as fallback ──
+    // Promise.any — only 2 concurrent calls, first winner resolves immediately.
+    fetchInlineStream(animeId, epNum)
+      .then(m3u8 => {
+        if (cancelled || !mountedRef.current) return;
+        setStreamUrl(m3u8);
+      })
+      .catch(err => {
+        console.warn('[InlineVideoCard] All streams failed:', err?.message ?? err);
+        if (!cancelled && mountedRef.current) setStreamError(true);
+      })
+      .finally(() => {
+        if (!cancelled && mountedRef.current) setIsLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, [isActive, animeId, epNum]); // stable primitives — no stale closure
+
+  const handleThumbnailPress = () => {
+    if (!isActive) {
+      onActivate(cardKey);
+    } else {
+      onPress();
+    }
+  };
+
   return (
     <View style={styles.releaseCard}>
-      {/* Aspect-video thumbnail */}
-      <TouchableOpacity onPress={onPress} style={styles.releaseThumbnail} activeOpacity={0.85}>
+      {/* Video / Thumbnail area */}
+      <TouchableOpacity
+        style={styles.releaseThumbnail}
+        onPress={handleThumbnailPress}
+        activeOpacity={isActive ? 1 : 0.85}
+      >
+        {/* Thumbnail always shown under video until stream is ready */}
         <Image source={{ uri: anime.image }} style={StyleSheet.absoluteFill} resizeMode="cover" />
-        <LinearGradient
-          colors={['rgba(0,0,0,0.2)', 'transparent', 'rgba(0,0,0,0.3)']}
-          style={StyleSheet.absoluteFill}
-        />
-        {/* Play circle top-left */}
-        <View style={styles.releasePlayCircle}>
-          <Ionicons name="play" size={13} color="#fff" />
-        </View>
+
+        {isActive && streamUrl ? (
+          // ── Live Video Player ──
+          (() => {
+            // Lazy-require expo-av so a missing native module never crashes HomeScreen at startup
+            let VideoComponent = null;
+            let coverMode = 'cover';
+            try {
+              const expoAv = require('expo-av');
+              VideoComponent = expoAv.Video;
+              coverMode = expoAv.ResizeMode?.COVER ?? 'cover';
+            } catch (_) { }
+            if (!VideoComponent) {
+              // Native module unavailable — fall through to error state
+              return (
+                <View style={[StyleSheet.absoluteFill, styles.videoLoadingOverlay]}>
+                  <TouchableOpacity onPress={onPress} style={{ alignItems: 'center', gap: 6 }}>
+                    <Ionicons name="play-circle" size={36} color="rgba(255,255,255,0.8)" />
+                    <Text style={{ color: '#aaa', fontSize: 11 }}>Open player</Text>
+                  </TouchableOpacity>
+                </View>
+              );
+            }
+            return (
+              <View style={StyleSheet.absoluteFill}>
+                <VideoComponent
+                  ref={videoRef}
+                  source={{ uri: streamUrl }}
+                  style={StyleSheet.absoluteFill}
+                  resizeMode={coverMode}
+                  shouldPlay
+                  isLooping
+                  isMuted={isMuted}
+                  onError={() => { setStreamError(true); setStreamUrl(null); }}
+                />
+                {/* Controls overlay */}
+                <LinearGradient
+                  colors={['transparent', 'rgba(0,0,0,0.55)']}
+                  style={StyleSheet.absoluteFill}
+                  pointerEvents="none"
+                />
+                {/* Mute toggle */}
+                <TouchableOpacity
+                  style={styles.muteBtn}
+                  onPress={() => setIsMuted(m => !m)}
+                >
+                  <Ionicons name={isMuted ? 'volume-mute' : 'volume-high'} size={16} color="#fff" />
+                </TouchableOpacity>
+                {/* Tap-to-open indicator */}
+                <TouchableOpacity style={styles.openFullBtn} onPress={onPress}>
+                  <Ionicons name="expand" size={14} color="#fff" />
+                </TouchableOpacity>
+              </View>
+            );
+          })()
+        ) : isActive && isLoading ? (
+          // ── Loading spinner ──
+          <View style={[StyleSheet.absoluteFill, styles.videoLoadingOverlay]}>
+            <ActivityIndicator size="small" color="#fff" />
+          </View>
+        ) : isActive && streamError ? (
+          // ── Error state — show play icon so user can tap to open full player ──
+          <View style={[StyleSheet.absoluteFill, styles.videoLoadingOverlay]}>
+            <TouchableOpacity onPress={onPress} style={{ alignItems: 'center', gap: 6 }}>
+              <Ionicons name="play-circle" size={36} color="rgba(255,255,255,0.8)" />
+              <Text style={{ color: '#aaa', fontSize: 11 }}>Open player</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          // ── Idle thumbnail ──
+          <>
+            <LinearGradient
+              colors={['rgba(0,0,0,0.2)', 'transparent', 'rgba(0,0,0,0.3)']}
+              style={StyleSheet.absoluteFill}
+            />
+            <View style={styles.releasePlayCircle}>
+              <Ionicons name="play" size={13} color="#fff" />
+            </View>
+          </>
+        )}
+
         {/* Ep badge bottom-right */}
         {anime.ep && (
           <View style={styles.releaseEpBadge}>
@@ -171,7 +314,6 @@ function VideoReleaseCard({ anime, onPress }) {
     </View>
   );
 }
-
 
 // ─── Hero Indicator ──────────────────────────────────────────────────────────
 function HeroIndicators({ items, activeIndex, onPress }) {
@@ -203,10 +345,12 @@ export default function HomeScreen({ navigation, route }) {
   const randomPageRef = useRef(Math.floor(Math.random() * 200) + 1);
   const [userList, setUserList] = useState([]);
   const [isSaveMenuOpen, setIsSaveMenuOpen] = useState(false);
+  // Active inline video — only one plays at a time; null = all paused
+  const [activeVideoId, setActiveVideoId] = useState(null);
 
   useFocusEffect(useCallback(() => {
     getList().then(setUserList);
-    
+
     if (user) {
       getHistoryFromCloud(user.uid)
         .then(cloud => {
@@ -217,6 +361,8 @@ export default function HomeScreen({ navigation, route }) {
     } else {
       getHistory().then(setHistory);
     }
+    // Pause any playing inline video when screen loses focus
+    return () => setActiveVideoId(null);
   }, [user]));
 
   const activeHero = data.heroItems?.[activeHeroIndex] || data.trending?.[activeHeroIndex];
@@ -254,11 +400,7 @@ export default function HomeScreen({ navigation, route }) {
     setIsSaveMenuOpen(false);
   };
 
-  // Handle navigation params from other screens (open search/notifications)
-  useEffect(() => {
-    if (route?.params?.openSearch) setIsSearchOpen(true);
-    if (route?.params?.openNotifications) setIsNotifOpen(true);
-  }, [route?.params]);
+  // Navigation to Search/Notifications is handled directly via navigation.navigate() in the header.
 
   const startHeroTimer = useCallback((items) => {
     clearInterval(heroTimerRef.current);
@@ -339,7 +481,7 @@ export default function HomeScreen({ navigation, route }) {
               random: enrich(prev.random || []),
             }));
           })
-          .catch(() => {}); // silently fail — badges just won't show
+          .catch(() => { }); // silently fail — badges just won't show
 
         const upRaw = d.upcoming?.media?.[0];
         const upcoming = upRaw ? {
@@ -827,13 +969,22 @@ export default function HomeScreen({ navigation, route }) {
           <View style={{ gap: 28, marginTop: 16 }}>
             {loading
               ? Array.from({ length: 3 }).map((_, i) => <AnimatedShimmer key={i} style={styles.skeletonRelease} />)
-              : recentReleases.map((anime, idx) => (
-                <VideoReleaseCard
-                  key={`r-${anime.id}-${idx}`}
-                  anime={anime}
-                  onPress={() => goToDetails(anime.id, anime.epIndex)}
-                />
-              ))
+              : recentReleases.map((anime, idx) => {
+                const cardKey = `${anime.id}-${anime.epIndex ?? 0}`;
+                return (
+                  <InlineVideoCard
+                    key={`r-${cardKey}-${idx}`}
+                    anime={anime}
+                    isActive={activeVideoId === cardKey}
+                    onActivate={(key) => setActiveVideoId(key)}
+                    onPress={() => {
+                      // Stop inline video before opening full player
+                      setActiveVideoId(null);
+                      goToDetails(anime.id, anime.epIndex);
+                    }}
+                  />
+                );
+              })
             }
             {isLoadingMore && (
               <ActivityIndicator size="small" color="#6b7280" style={{ marginTop: 8 }} />
@@ -1046,6 +1197,23 @@ const styles = StyleSheet.create({
   releaseEpLabel: { color: '#e5e7eb', fontSize: 12, fontWeight: '700' },
   releaseTitle: { color: '#9ca3af', fontSize: 11, marginTop: 1 },
   releaseTime: { color: '#6b7280', fontSize: 10, marginTop: 2 },
+  // Inline video controls
+  muteBtn: {
+    position: 'absolute', bottom: 10, left: 10,
+    width: 30, height: 30, borderRadius: 15,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  openFullBtn: {
+    position: 'absolute', bottom: 10, right: 10,
+    width: 30, height: 30, borderRadius: 15,
+    backgroundColor: 'rgba(0,0,0,0.55)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  videoLoadingOverlay: {
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center', justifyContent: 'center',
+  },
   saveMenu: { width: 280, backgroundColor: '#111', borderRadius: 16, padding: 20, borderWidth: 1, borderColor: '#222' },
   saveMenuTitle: { color: '#fff', fontSize: 18, fontWeight: '700', marginBottom: 16 },
   saveMenuBtn: { flexDirection: 'row', alignItems: 'center', paddingVertical: 10 },

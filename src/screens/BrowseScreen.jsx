@@ -8,6 +8,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { AnimatedShimmer } from '../components/SharedComponents';
 import { GENRES, FORMATS, SORTS, STATUSES, SEASONS, TAGS, COUNTRIES, SOURCES, YEARS } from '../data/constants';
 import { BROWSE_QUERY } from '../data/queries';
+import { scrapeSubDubForTitles } from '../api/scrapers/search.scraper';
 
 // All filter rows
 const FILTER_ROWS = [
@@ -141,6 +142,27 @@ export default function BrowseScreen({ navigation, route }) {
         setResults(reset ? items : prev => [...prev, ...items]);
         setHasMore(json.data.Page.pageInfo.hasNextPage);
         setPage(fetchPage);
+
+        // Enrich with sub/dub info from anikoto (fire-and-forget)
+        // Only enrich items that don't already have sub/dub info
+        const needsEnrich = items.filter(c => c.hasSub === undefined && c.hasDub === undefined);
+        if (needsEnrich.length > 0) {
+          const normTitle = (t) => t.toLowerCase().replace(/[^a-z0-9]/g, '');
+          // Snapshot the IDs of this batch so the callback only touches these items
+          const batchIds = new Set(needsEnrich.map(c => String(c.id)));
+          scrapeSubDubForTitles(needsEnrich.map(c => c.title))
+            .then(subDubMap => {
+              setResults(prev => prev.map(c => {
+                // Skip items not in this batch — preserves other pages' data
+                if (!batchIds.has(String(c.id))) return c;
+                // Skip items that were already enriched by a faster concurrent call
+                if (c.hasSub !== undefined || c.hasDub !== undefined) return c;
+                const info = subDubMap[normTitle(c.title)];
+                return info ? { ...c, hasSub: info.hasSub, hasDub: info.hasDub } : c;
+              }));
+            })
+            .catch(() => {});
+        }
       }
     } catch (e) {
       console.log('Browse fetch failed:', e);
@@ -177,6 +199,12 @@ export default function BrowseScreen({ navigation, route }) {
       >
         <View style={cardStyles.imageWrap}>
           <Image source={{ uri: item.image }} style={cardStyles.image} resizeMode="cover" />
+          {(item.hasSub || item.hasDub) && (
+            <View style={cardStyles.subDubRow}>
+              {item.hasSub && <View style={cardStyles.subBadge}><Text style={cardStyles.subDubText}>SUB</Text></View>}
+              {item.hasDub && <View style={cardStyles.dubBadge}><Text style={cardStyles.subDubText}>DUB</Text></View>}
+            </View>
+          )}
         </View>
         <View style={cardStyles.meta}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flex: 1, paddingRight: 4 }}>
@@ -192,13 +220,17 @@ export default function BrowseScreen({ navigation, route }) {
 
   const cardStyles = StyleSheet.create({
     card: { flex: 1, margin: 4 },
-    imageWrap: { width: '100%', aspectRatio: 3 / 4.2, borderRadius: 14, overflow: 'hidden', borderWidth: 1, borderColor: '#1a1a1a', marginBottom: 6 },
+    imageWrap: { width: '100%', aspectRatio: 3 / 4.2, borderRadius: 14, overflow: 'hidden', borderWidth: 1, borderColor: '#1a1a1a', marginBottom: 6, position: 'relative' },
     image: { width: '100%', height: '100%', backgroundColor: '#111' },
     meta: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4, paddingHorizontal: 2 },
     type: { color: '#9ca3af', fontSize: 10, flex: 1 },
     year: { color: '#9ca3af', fontSize: 10 },
     title: { color: '#e5e7eb', fontSize: 12.5, fontWeight: '600', lineHeight: 17, paddingHorizontal: 2 },
     greenDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#22c55e' },
+    subDubRow: { position: 'absolute', bottom: 5, left: 4, flexDirection: 'row', gap: 3 },
+    subBadge: { backgroundColor: 'rgba(0,0,0,0.75)', borderRadius: 4, paddingHorizontal: 5, paddingVertical: 2, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' },
+    dubBadge: { backgroundColor: 'rgba(0,0,0,0.75)', borderRadius: 4, paddingHorizontal: 5, paddingVertical: 2, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' },
+    subDubText: { color: '#fff', fontSize: 9, fontWeight: '700', letterSpacing: 0.5 },
   });
 
   return (

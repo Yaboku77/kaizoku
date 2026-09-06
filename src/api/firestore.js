@@ -171,7 +171,7 @@ export async function saveSettingsToCloud(uid, prefs) {
 export async function getSettingsFromCloud(uid) {
   if (!uid) return null;
   try {
-    const ref  = doc(db, 'users', uid, 'settings', 'prefs');
+    const ref = doc(db, 'users', uid, 'settings', 'prefs');
     const snap = await getDoc(ref);
     if (snap.exists()) {
       const { updatedAt, ...prefs } = snap.data();
@@ -196,7 +196,7 @@ export async function getSettingsFromCloud(uid) {
 export async function getReactionState(animeId, uid = null) {
   try {
     const animeSnap = await getDoc(doc(db, 'anime', String(animeId)));
-    const counts    = animeSnap.exists()
+    const counts = animeSnap.exists()
       ? { likes: animeSnap.data().likes || 0, dislikes: animeSnap.data().dislikes || 0 }
       : { likes: 0, dislikes: 0 };
 
@@ -224,7 +224,7 @@ export async function getReactionState(animeId, uid = null) {
 export async function toggleReaction(animeId, uid, displayName, animeTitle, newReaction) {
   if (!uid) throw new Error('Must be signed in to react');
 
-  const animeRef    = doc(db, 'anime', String(animeId));
+  const animeRef = doc(db, 'anime', String(animeId));
   const reactionRef = doc(db, 'anime', String(animeId), 'reactions', uid);
 
   let out = { likes: 0, dislikes: 0, userReaction: null };
@@ -237,7 +237,7 @@ export async function toggleReaction(animeId, uid, displayName, animeTitle, newR
       : { likes: 0, dislikes: 0 };
 
     const prevReaction = rxSnap.exists() ? rxSnap.data().reaction : null;
-    const isSame       = prevReaction === newReaction;
+    const isSame = prevReaction === newReaction;
 
     const next = { ...cur, animeId: String(animeId), animeTitle: animeTitle || '' };
 
@@ -261,7 +261,7 @@ export async function toggleReaction(animeId, uid, displayName, animeTitle, newR
     }
 
     tx.set(animeRef, next, { merge: true });
-    out.likes    = next.likes    ?? cur.likes;
+    out.likes = next.likes ?? cur.likes;
     out.dislikes = next.dislikes ?? cur.dislikes;
   });
 
@@ -300,13 +300,13 @@ export async function postComment(animeId, { uid, displayName, photoURL, text, s
   const ref = await addDoc(col, {
     uid,
     displayName: displayName || 'User',
-    photoURL:    photoURL    || '',
+    photoURL: photoURL || '',
     text,
-    spoiler:     !!spoiler,
-    likes:       0,
-    dislikes:    0,
-    replyCount:  0,
-    createdAt:   serverTimestamp(),
+    spoiler: !!spoiler,
+    likes: 0,
+    dislikes: 0,
+    replyCount: 0,
+    createdAt: serverTimestamp(),
   });
   // Increment aggregate commentCount on the anime doc
   await setDoc(doc(db, 'anime', String(animeId)), { commentCount: increment(1) }, { merge: true });
@@ -326,7 +326,7 @@ export function subscribeToComments(animeId, callback, onError) {
   return onSnapshot(
     q,
     snap => callback(snap.docs.map(d => ({ id: d.id, ...d.data() }))),
-    err  => {
+    err => {
       console.log('[Firestore] subscribeToComments error:', err.message);
       if (onError) onError(err);
     }
@@ -371,7 +371,7 @@ export async function getTopComment(animeId) {
  * Returns { likes, dislikes, userReaction }.
  */
 export async function toggleCommentReaction(animeId, commentId, uid, reaction) {
-  const commentRef  = doc(db, 'anime', String(animeId), 'comments', commentId);
+  const commentRef = doc(db, 'anime', String(animeId), 'comments', commentId);
   const reactionRef = doc(db, 'anime', String(animeId), 'comments', commentId, 'reactions', uid);
 
   let out = { likes: 0, dislikes: 0, userReaction: null };
@@ -383,9 +383,9 @@ export async function toggleCommentReaction(animeId, commentId, uid, reaction) {
       ? { likes: cSnap.data().likes || 0, dislikes: cSnap.data().dislikes || 0 }
       : { likes: 0, dislikes: 0 };
 
-    const prev   = rSnap.exists() ? rSnap.data().reaction : null;
+    const prev = rSnap.exists() ? rSnap.data().reaction : null;
     const isSame = prev === reaction;
-    const next   = { ...cur };
+    const next = { ...cur };
 
     if (isSame) {
       next[reaction === 'like' ? 'likes' : 'dislikes'] = Math.max(0, cur[reaction === 'like' ? 'likes' : 'dislikes'] - 1);
@@ -398,7 +398,7 @@ export async function toggleCommentReaction(animeId, commentId, uid, reaction) {
       out.userReaction = reaction;
     }
     tx.set(commentRef, next, { merge: true });
-    out.likes    = next.likes;
+    out.likes = next.likes;
     out.dislikes = next.dislikes;
   });
 
@@ -413,10 +413,10 @@ export async function postReply(animeId, commentId, { uid, displayName, photoURL
   await addDoc(col, {
     uid,
     displayName: displayName || 'User',
-    photoURL:    photoURL    || '',
+    photoURL: photoURL || '',
     text,
-    likes:       0,
-    createdAt:   serverTimestamp(),
+    likes: 0,
+    createdAt: serverTimestamp(),
   });
   // Increment replyCount on parent comment
   await setDoc(doc(db, 'anime', String(animeId), 'comments', commentId), { replyCount: increment(1) }, { merge: true });
@@ -427,7 +427,7 @@ export async function postReply(animeId, commentId, { uid, displayName, photoURL
  */
 export async function getReplies(animeId, commentId) {
   try {
-    const q    = query(collection(db, 'anime', String(animeId), 'comments', commentId, 'replies'), orderBy('createdAt', 'asc'));
+    const q = query(collection(db, 'anime', String(animeId), 'comments', commentId, 'replies'), orderBy('createdAt', 'asc'));
     const snap = await getDocs(q);
     return snap.docs.map(d => ({ id: d.id, ...d.data() }));
   } catch (e) {

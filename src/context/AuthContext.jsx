@@ -12,7 +12,7 @@ import { auth } from '../firebase';
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [user,    setUser]    = useState(null);
+  const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -50,7 +50,7 @@ export function AuthProvider({ children }) {
     if (!auth.currentUser) return;
     await updateProfile(auth.currentUser, {
       ...(displayName !== undefined ? { displayName } : {}),
-      ...(photoURL     !== undefined ? { photoURL }     : {}),
+      ...(photoURL !== undefined ? { photoURL } : {}),
     });
     // Firebase doesn't automatically re-emit onAuthStateChanged after updateProfile,
     // so we reload the user and force a state update.

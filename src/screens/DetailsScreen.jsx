@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, StyleSheet, TouchableOpacity, Image, ScrollView,
   Dimensions, ActivityIndicator, Modal, TouchableWithoutFeedback
@@ -15,6 +15,7 @@ import { usePlayer } from '../context/PlayerContext';
 import { useAuth } from '../context/AuthContext';
 import { useAuthModal } from '../context/AuthModalContext';
 import { saveListToCloud, removeFromListCloud, getReactionState, toggleReaction } from '../api/firestore';
+import { scrapeSubDubForTitles } from '../api/scrapers/search.scraper';
 
 const { width } = Dimensions.get('window');
 const EPISODES_PER_PAGE = 25;
@@ -55,6 +56,8 @@ export default function DetailsScreen({ route, navigation }) {
   const [isFetchingEpisodes, setIsFetchingEpisodes] = useState(false);
   const [activeTab, setActiveTab] = useState('Overview');
   const [episodePage, setEpisodePage] = useState(1);
+  // Tracks the animeId for which a fetch/enrichment was started — used to discard stale async results
+  const fetchIdRef = useRef(animeId);
   const [sortOrder, setSortOrder] = useState('asc');
   const [savedStatus, setSavedStatus] = useState(null);
   const [isSaveMenuOpen, setIsSaveMenuOpen] = useState(false);
@@ -249,6 +252,27 @@ export default function DetailsScreen({ route, navigation }) {
         };
         setData(processed);
         fetchTMDBEpisodes(processed);
+
+        // Enrich recommendations with sub/dub from anikoto (fire-and-forget)
+        if (processed.recommendations?.length > 0) {
+          const thisAnimeId = animeId; // capture for closure
+          fetchIdRef.current = animeId;
+          const normTitle = (t) => t.toLowerCase().replace(/[^a-z0-9]/g, '');
+          scrapeSubDubForTitles(processed.recommendations.map(r => r.title))
+            .then(subDubMap => {
+              // Discard if user navigated to a different anime
+              if (fetchIdRef.current !== thisAnimeId) return;
+              setData(prev => prev ? ({
+                ...prev,
+                recommendations: prev.recommendations.map(r => {
+                  if (r.hasSub !== undefined || r.hasDub !== undefined) return r;
+                  const info = subDubMap[normTitle(r.title)];
+                  return info ? { ...r, hasSub: info.hasSub, hasDub: info.hasDub } : r;
+                }),
+              }) : prev);
+            })
+            .catch(() => { });
+        }
       }
     } catch (e) {
       console.log('Details fetch error:', e);
@@ -794,7 +818,23 @@ export default function DetailsScreen({ route, navigation }) {
                   onPress={() => navigation.push('Details', { animeId: rec.id })}
                   activeOpacity={0.85}
                 >
-                  <Image source={{ uri: rec.coverImage }} style={[S.relImg, { aspectRatio: 3 / 4, height: 100 }]} resizeMode="cover" />
+                  <View style={[S.relImg, { aspectRatio: 3 / 4, height: 100, overflow: 'hidden', borderRadius: 10 }]}>
+                    <Image source={{ uri: rec.coverImage }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                    {(rec.hasSub || rec.hasDub) && (
+                      <View style={{ position: 'absolute', bottom: 4, left: 4, flexDirection: 'row', gap: 3 }}>
+                        {rec.hasSub && (
+                          <View style={{ backgroundColor: 'rgba(0,0,0,0.78)', borderRadius: 4, paddingHorizontal: 5, paddingVertical: 2, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' }}>
+                            <Text style={{ color: '#fff', fontSize: 9, fontWeight: '700', letterSpacing: 0.5 }}>SUB</Text>
+                          </View>
+                        )}
+                        {rec.hasDub && (
+                          <View style={{ backgroundColor: 'rgba(0,0,0,0.78)', borderRadius: 4, paddingHorizontal: 5, paddingVertical: 2, borderWidth: 1, borderColor: 'rgba(255,255,255,0.12)' }}>
+                            <Text style={{ color: '#fff', fontSize: 9, fontWeight: '700', letterSpacing: 0.5 }}>DUB</Text>
+                          </View>
+                        )}
+                      </View>
+                    )}
+                  </View>
                   <View style={{ flex: 1, justifyContent: 'center', paddingLeft: 4 }}>
                     <Text style={S.relTitle} numberOfLines={2}>{rec.title}</Text>
                     <Text style={S.relMeta}>{[rec.format, rec.season, rec.year].filter(Boolean).join('  ')}</Text>
