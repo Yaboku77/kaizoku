@@ -53,6 +53,8 @@ export default function SearchScreen({ navigation }) {
                         })
                       });
                       const json = await res.json();
+                      if (!res.ok || json.errors) throw new Error("Anilist API error");
+
                       const results = json.data?.Page?.media || [];
                       const mapped = results.map(m => ({
                         id: m.id,
@@ -78,7 +80,10 @@ export default function SearchScreen({ navigation }) {
                           }));
                         })
                         .catch(() => {});
-                    } catch (_) { setSearchResults([]); }
+                    } catch (_) { 
+                      console.log("Search Anilist error, AniList may be offline");
+                      setSearchResults([]);
+                    }
                     finally { setSearchLoading(false); }
                   }, 400);
                 }}

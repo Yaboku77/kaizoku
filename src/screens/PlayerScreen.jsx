@@ -6,6 +6,7 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as ScreenOrientation from 'expo-screen-orientation';
+import * as NavigationBar from 'expo-navigation-bar';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
@@ -21,7 +22,7 @@ import { useAuth } from '../context/AuthContext';
 import { saveHistoryToCloud, updateProgressInCloud, saveListToCloud, removeFromListCloud, getReactionState, toggleReaction } from '../api/firestore';
 import { fetchAniListCommentsPreview } from '../api/anilist';
 import { scrapeSearch } from '../api/scrapers/search.scraper';
-import { scrapeMergedWatch } from '../api/scrapers/merged.scraper';
+import { scrapeWatch } from '../api/scrapers/watch.scraper';
 import { extractStreamUrl, extractVidstream } from '../api/extractors';
 import CommentsSheet from './CommentsSheet';
 
@@ -47,9 +48,9 @@ const TMDB_KEY = TMDB_API_KEY;
 const EPISODES_PER_PAGE = 25;
 // Preferred server order (from API: VidPlay-1, HD-1, Vidstream-2, VidCloud-1)
 // Server preference order — names must match what anikoto returns in the AJAX server list
-const PREFERRED_SERVERS = ['Vidstream', 'VidPlay', 'MegaPlay', 'HD-1', 'VidCloud', 'Kiwi Stream'];
+const PREFERRED_SERVERS = ['MegaPlay', 'Vidstream', 'VidPlay', 'HD-1', 'VidCloud', 'Kiwi Stream'];
 // Also check these substrings to match partial server names (case-insensitive)
-const PREFERRED_SERVER_PATTERNS = ['vidstream', 'vidplay', 'megaplay', 'hd-1', 'vidcloud', 'kiwi'];
+const PREFERRED_SERVER_PATTERNS = ['megaplay', 'vidstream', 'vidplay', 'hd-1', 'vidcloud', 'kiwi'];
 
 // ─── Episode Card (matches web EpisodeCard) ──────────────────────────────────
 function EpisodeCard({ ep, isActive, coverImage, onPress }) {
@@ -1169,14 +1170,27 @@ const PlayerScreenInner = () => {
           if (Platform.OS === 'android' && NativeModules.PipActions) {
             try {
               NativeModules.PipActions.setImmersiveMode(true);
-            } catch (e) {}
+            } catch (e) { }
+          }
+          if (Platform.OS === 'android') {
+            try {
+              NavigationBar.setVisibilityAsync("hidden");
+              NavigationBar.setBehaviorAsync("overlay-swipe");
+              NavigationBar.setPositionAsync("absolute");
+            } catch (e) { }
           }
           await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.LANDSCAPE);
         } else {
           if (Platform.OS === 'android' && NativeModules.PipActions) {
             try {
               NativeModules.PipActions.setImmersiveMode(false);
-            } catch (e) {}
+            } catch (e) { }
+          }
+          if (Platform.OS === 'android') {
+            try {
+              NavigationBar.setVisibilityAsync("visible");
+              NavigationBar.setPositionAsync("relative");
+            } catch (e) { }
           }
           await ScreenOrientation.lockAsync(ScreenOrientation.OrientationLock.PORTRAIT_UP);
         }
@@ -1433,6 +1447,7 @@ const PlayerScreenInner = () => {
         }
 
         const isValid = (s) => {
+          if (s.failed) return false;
           if (!s.m3u8 && !s.url) return false;
           if (wantType === 'dub' && s.type === 'dub') {
             const subVer = sources.find(x => x.server === s.server && x.type === 'sub' && (x.m3u8 || x.url));
@@ -1494,16 +1509,32 @@ const PlayerScreenInner = () => {
                 if (extracted.intro) chosen.intro = extracted.intro;
                 if (extracted.outro) chosen.outro = extracted.outro;
                 if (extracted.allSources) chosen.allSources = extracted.allSources;
+              } else {
+                const serverLower = (chosen.server || '').toLowerCase();
+                if (serverLower.includes('tryembed') || serverLower.includes('cinexstream') || serverLower.includes('nontongo')) {
+                  streamSrc = chosen.url;
+                }
               }
             } else if (!streamSrc && chosen.url) {
-              streamSrc = chosen.url;
+              const serverLower = (chosen.server || '').toLowerCase();
+              if (serverLower.includes('tryembed') || serverLower.includes('cinexstream') || serverLower.includes('nontongo')) {
+                streamSrc = chosen.url;
+              }
             }
           } catch (e) {
             console.log('Extraction error in processData:', e);
           }
 
-          if (!streamSrc || (!streamSrc.includes('.m3u8') && !streamSrc.includes('.mp4'))) {
+          let isEmbed = false;
+          if (!streamSrc) {
             if (!isFinal) return; // wait for background eagerTasks to finish and trigger another onPartial
+
+            // Extraction failed for this server, mark it as failed and try another
+            console.log(`[DEBUG] Extraction failed for ${chosen.server}, trying fallback...`);
+            chosen.failed = true;
+            return processData(data, isFinal);
+          } else if (!streamSrc.includes('.m3u8') && !streamSrc.includes('.mp4')) {
+            isEmbed = true;
           }
 
           hasStartedPlaying = true;
@@ -1541,13 +1572,17 @@ const PlayerScreenInner = () => {
           setIntroData(intro);
           setOutroData(outro);
 
-          console.log(`[DEBUG] Playing: server=${chosen.server} type=${chosen.type} m3u8=${streamSrc} referer=${chosen.referer} baseUrl=${refererBase}`);
-          setStreamUrl({ html: buildPlayerHTML(streamSrc, chosen.referer || '', tracks, playbackSpeed, initialTime, subtitlesEnabledRef.current, intro, outro, isPlayingRef.current || prefs.autoPlay, { fontSize: subFontSize, bgOpacity: subBgOpacity, blur: subBlur }), baseUrl: refererBase });
+          console.log(`[DEBUG] Playing: server=${chosen.server} type=${chosen.type} src=${streamSrc} referer=${chosen.referer} baseUrl=${refererBase} isEmbed=${isEmbed}`);
+          if (isEmbed) {
+            setStreamUrl({ uri: streamSrc });
+          } else {
+            setStreamUrl({ html: buildPlayerHTML(streamSrc, chosen.referer || '', tracks, playbackSpeed, initialTime, subtitlesEnabledRef.current, intro, outro, isPlayingRef.current || prefs.autoPlay, { fontSize: subFontSize, bgOpacity: subBgOpacity, blur: subBlur }), baseUrl: refererBase });
+          }
           setIsStreamLoading(false);
         }
       };
 
-      const finalData = await scrapeMergedWatch(String(animeId), slug, String(epNum), processData, idMal);
+      const finalData = await scrapeWatch(slug, String(epNum), processData, idMal);
       await processData(finalData, true);
 
       if (!hasStartedPlaying) {
@@ -2430,8 +2465,50 @@ loadSrc(src);
                 allowsInlineMediaPlayback
                 mediaPlaybackRequiresUserAction={false}
                 onLoadEnd={() => setIsVideoLoading(false)}
+                injectedJavaScriptForMainFrameOnly={false}
                 injectedJavaScript={`
                   (function() {
+                    // Remove website padding so the player centers perfectly in the notch-included screen
+                    var style = document.createElement('style');
+                    style.innerHTML = 'body, html { margin: 0 !important; padding: 0 !important; overflow: hidden !important; background-color: #000 !important; }';
+                    document.head.appendChild(style);
+
+                    // Intercept fetch to capture m3u8 requests
+                    var originalFetch = window.fetch;
+                    window.fetch = function() {
+                      var url = arguments[0];
+                      if (typeof url === 'string' && url.indexOf('.m3u8') !== -1) {
+                        if (!window.__m3u8Sent) {
+                          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'm3u8_found', url: url }));
+                          window.__m3u8Sent = true;
+                        }
+                      }
+                      return originalFetch.apply(this, arguments);
+                    };
+
+                    // Intercept XMLHttpRequest to capture m3u8 requests
+                    var originalOpen = XMLHttpRequest.prototype.open;
+                    XMLHttpRequest.prototype.open = function(method, url) {
+                      if (typeof url === 'string' && url.indexOf('.m3u8') !== -1) {
+                        if (!window.__m3u8Sent) {
+                          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'm3u8_found', url: url }));
+                          window.__m3u8Sent = true;
+                        }
+                      }
+                      return originalOpen.apply(this, arguments);
+                    };
+
+                    // Also periodically check video tag src just in case
+                    setInterval(function() {
+                      var v = document.querySelector('video');
+                      if (v && v.src && v.src.indexOf('.m3u8') !== -1) {
+                        if (!window.__m3u8Sent) {
+                          window.ReactNativeWebView.postMessage(JSON.stringify({ type: 'm3u8_found', url: v.src }));
+                          window.__m3u8Sent = true;
+                        }
+                      }
+                    }, 1000);
+
                     // Handle messages from React Native -> WebView
                     var _rnwListener = function(event) {
                       try {
@@ -2476,7 +2553,25 @@ loadSrc(src);
                 onMessage={(e) => {
                   try {
                     const msg = JSON.parse(e.nativeEvent.data);
-                    if (msg.type === 'openSettings') {
+                    if (msg.type === 'm3u8_found' && streamUrl && streamUrl.uri) {
+                      console.log('[DEBUG] Extracted m3u8 dynamically from iframe:', msg.url);
+                      // Apply proxy if configured
+                      let finalM3u8 = msg.url;
+                      const rawBaseUrl = process.env.EXPO_PUBLIC_CF_WORKER_URL || 'https://aonime-proxy.bgtoons.workers.dev/';
+                      if (rawBaseUrl) {
+                        let proxyBase = rawBaseUrl.trim();
+                        if (!proxyBase.startsWith('http') && !proxyBase.startsWith('/')) {
+                          proxyBase = `https://${proxyBase}`;
+                        }
+                        const proxySep = proxyBase.includes('?') ? '&' : '?';
+                        const refererParam = streamUrl.uri ? `&referer=${encodeURIComponent(streamUrl.uri)}` : '';
+                        finalM3u8 = `${proxyBase}${proxySep}url=${encodeURIComponent(msg.url)}${refererParam}`;
+                      }
+
+                      // Switch from iframe embed to native HLS player using the extracted url
+                      const newHtml = buildPlayerHTML(finalM3u8, streamUrl.uri, chosenTracksRef.current, playbackSpeed, progressRef.current?.time || 0, subtitlesEnabledRef.current, introData, outroData, isPlayingRef.current || prefs.autoPlay, { fontSize: subFontSize, bgOpacity: subBgOpacity, blur: subBlur });
+                      setStreamUrl({ html: newHtml, baseUrl: streamUrl.uri });
+                    } else if (msg.type === 'openSettings') {
                       setActiveMenu('main');
                       setIsSettingsOpen(true);
                     } else if (msg.type === 'goBack') {

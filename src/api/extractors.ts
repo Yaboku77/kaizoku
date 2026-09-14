@@ -1,6 +1,40 @@
 import axios from 'axios';
 import { Buffer } from 'buffer';
-import { DEFAULT_HEADERS } from './constants';
+import CryptoJS from 'crypto-js';
+
+const DEFAULT_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36',
+  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+  'Accept-Language': 'en-US,en;q=0.5',
+};
+
+
+
+function decryptMegaplayEnc(enc: string): string | null {
+  try {
+    const E = 'i?LMTAx0Q6,:}50U' + '\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0';
+    const C = "W0;27ToaUpl_P%'c";
+
+    let b64 = enc.replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4) b64 += '=';
+
+    const key = CryptoJS.enc.Utf8.parse(E);
+    const iv = CryptoJS.enc.Utf8.parse(C);
+
+    const decrypted = CryptoJS.AES.decrypt(b64, key, {
+      iv: iv,
+      mode: CryptoJS.mode.CBC,
+      padding: CryptoJS.pad.Pkcs7
+    });
+
+    const decryptedStr = decrypted.toString(CryptoJS.enc.Utf8);
+    const parsed = JSON.parse(decryptedStr);
+    return parsed.file || parsed[0]?.file || null;
+  } catch (err) {
+    console.warn('[Megaplay] Decryption failed:', err);
+    return null;
+  }
+}
 
 const KIWI_MAPPER_URLS = [
   'https://mapper.nekostream.site/api/mal',
@@ -77,15 +111,27 @@ async function getMegacloudKeys(): Promise<Record<string, string>> {
 async function _doMegaplay(
   host: string,
   html: string,
-  referer: string
+  referer: string,
+  sParam?: string | null,
+  embedUrl?: string,
+  mediaType?: string
 ): Promise<ExtractedStream | null> {
   const match = html.match(/<title>File ([0-9]+)/);
   if (!match) return null;
 
   const id = match[1];
-  const { data } = await axios.get(`https://${host}/stream/getSources?id=${id}`, {
-    headers: { ...DEFAULT_HEADERS, 'X-Requested-With': 'XMLHttpRequest', Referer: referer },
-    timeout: 15000,
+  const sQs = sParam ? `&s=${encodeURIComponent(sParam)}` : '';
+
+  const htmlTypeMatch = html.match(/type:\s*['"]([a-zA-Z0-9_-]+)['"]/i) ||
+                        html.match(/data-type=['"]([a-zA-Z0-9_-]+)['"]/i);
+  const urlTypeMatch = (embedUrl || '').match(/\/(sub|dub|hsub|raw)(?:[?#]|$)/i);
+  const resolvedType = htmlTypeMatch?.[1] || mediaType || urlTypeMatch?.[1];
+  const typeQs = resolvedType ? `&type=${encodeURIComponent(resolvedType)}` : '';
+
+  const reqReferer = embedUrl || referer;
+  const { data } = await axios.get(`https://${host}/stream/getSources?id=${id}${sQs}${typeQs}`, {
+    headers: { ...DEFAULT_HEADERS, 'X-Requested-With': 'XMLHttpRequest', Referer: reqReferer },
+    timeout: 5000,
   });
 
   const rawSources: any[] = Array.isArray(data?.sources) ? data.sources : (data?.sources?.file ? [{ file: data.sources.file }] : []);
@@ -95,6 +141,9 @@ async function _doMegaplay(
   })).filter(s => s.file);
 
   let m3u8: string | undefined = data?.sources?.file;
+  if (!m3u8 && data?.enc) {
+    m3u8 = decryptMegaplayEnc(data.enc) || undefined;
+  }
   if (!m3u8) {
     const autoSource = allSources.find(s => s.label?.toLowerCase() === 'auto' || s.label?.toLowerCase() === 'default');
     m3u8 = autoSource?.file || allSources[0]?.file;
@@ -103,32 +152,36 @@ async function _doMegaplay(
   const intro = data?.intro;
   const outro = data?.outro;
 
-  if (m3u8 && m3u8.includes('mewstream.buzz')) {
-    let replacementHost = '1oe.lostproject.club';
-    const firstTrack = tracks.find(t => t.file && !t.file.includes('mewstream.buzz'));
-    if (firstTrack) {
-      try {
-        replacementHost = new URL(firstTrack.file).host;
-      } catch (_) { }
-    }
-    try {
-      const parsedM3u8 = new URL(m3u8);
-      parsedM3u8.host = replacementHost;
-      m3u8 = parsedM3u8.toString();
-    } catch (_) { }
+  if (!m3u8) return null;
 
-    if (allSources) {
-      allSources.forEach(source => {
-        if (source.file && source.file.includes('mewstream.buzz')) {
-          try {
-            const parsedSource = new URL(source.file);
-            parsedSource.host = replacementHost;
-            source.file = parsedSource.toString();
-          } catch (_) { }
-        }
-      });
+  if (m3u8.includes('//cdn.imgnex.top')) {
+    m3u8 = m3u8.replace('//cdn.imgnex.top', '//ncdn.imgnex.top');
+    } else if (m3u8.includes('mewstream.buzz')) {
+      let replacementHost = '1oe.lostproject.club';
+      const firstTrack = tracks.find(t => t.file && !t.file.includes('mewstream.buzz'));
+      if (firstTrack) {
+        try {
+          replacementHost = new URL(firstTrack.file).host;
+        } catch (_) { }
+      }
+      try {
+        const parsedM3u8 = new URL(m3u8);
+        parsedM3u8.host = replacementHost;
+        m3u8 = parsedM3u8.toString();
+      } catch (_) { }
+
+      if (allSources) {
+        allSources.forEach(source => {
+          if (source.file && source.file.includes('mewstream.buzz')) {
+            try {
+              const parsedSource = new URL(source.file);
+              parsedSource.host = replacementHost;
+              source.file = parsedSource.toString();
+            } catch (_) { }
+          }
+        });
+      }
     }
-  }
 
   return m3u8 ? { m3u8, referer, tracks, intro, outro, allSources } : null;
 }
@@ -253,27 +306,33 @@ export async function extractKiwiMapper(
 
 export async function extractVidstream(
   embedUrl: string,
-  referer: string
+  referer: string,
+  mediaType?: string
 ): Promise<ExtractedStream | null> {
   try {
+    let parentOrigin = referer;
+    try {
+      parentOrigin = new URL(referer).origin + '/';
+    } catch (_) {}
+
     const { data: html } = await axios.get<string>(embedUrl, {
-      headers: { ...DEFAULT_HEADERS, Referer: referer },
+      headers: { ...DEFAULT_HEADERS, Referer: parentOrigin },
       timeout: 8000,
     });
 
-    const epIdMatch = html.match(/data-ep-id=["'](\d+)["']/);
+    const epIdMatch = html.match(/id:\s*'([^']+)'/);
     const typeMatch = html.match(/type:\s*'(\w+)'/);
     const domain2Match = html.match(/domain2_url:\s*'([^']+)'/);
 
-    if (!epIdMatch || !typeMatch || !domain2Match) return null;
+    if (!epIdMatch || (!typeMatch && !mediaType) || !domain2Match) return null;
 
     const epId = epIdMatch[1];
-    const epType = typeMatch[1];
+    const epType = mediaType || typeMatch?.[1];
     const domain2 = domain2Match[1].trim();
 
     const saveDataUrl = `${domain2}/save_data.php?id=${epId}-${epType}`;
     const { data } = await axios.get(saveDataUrl, {
-      headers: { ...DEFAULT_HEADERS, Referer: referer },
+      headers: { ...DEFAULT_HEADERS, Referer: embedUrl },
       timeout: 8000,
     });
 
@@ -294,37 +353,54 @@ export async function extractVidstream(
   }
 }
 
-export async function extractMegaplay(embedUrl: string): Promise<ExtractedStream | null> {
+export async function extractMegaplay(
+  embedUrl: string,
+  mediaType?: string
+): Promise<ExtractedStream | null> {
   try {
-    const host = new URL(embedUrl).host;
+    const parsed = new URL(embedUrl);
+    const host = parsed.host;
+    const sParam = parsed.searchParams.get('s');
     const referer = 'https://' + host + '/';
     const { data: html } = await axios.get<string>(embedUrl, {
       headers: { ...DEFAULT_HEADERS, Referer: referer },
-      timeout: 15000,
+      timeout: 5000,
     });
-    return await _doMegaplay(host, html, referer);
+    return await _doMegaplay(host, html, referer, sParam, embedUrl, mediaType);
   } catch (err) {
     console.error('Megaplay extraction failed:', err);
     return null;
   }
 }
 
-export async function extractMegacloud(embedUrl: string): Promise<ExtractedStream | null> {
+export async function extractMegacloud(
+  embedUrl: string,
+  parentReferer?: string
+): Promise<ExtractedStream | null> {
   try {
     const origin = new URL(embedUrl).origin;
-    const referer = origin + '/';
+    let referer = origin + '/';
+    if (parentReferer) {
+      try {
+        referer = new URL(parentReferer).origin + '/';
+      } catch (_) {}
+    }
     const { data: html } = await axios.get<string>(embedUrl, {
       headers: { ...DEFAULT_HEADERS, Referer: referer },
-      timeout: 15000,
+      timeout: 5000,
     });
-    return await _doMegacloud(embedUrl, html, referer);
+    return await _doMegacloud(embedUrl, html, embedUrl);
   } catch (err) {
     console.error('Megacloud extraction failed:', err);
     return null;
   }
 }
 
-export async function extractStreamUrl(embedUrl: string): Promise<ExtractedStream | null> {
+export async function extractStreamUrl(
+  embedUrl: string,
+  parentReferer?: string,
+  mediaType?: string
+): Promise<ExtractedStream | null> {
   const hostname = new URL(embedUrl).hostname;
 
   if (
@@ -335,30 +411,35 @@ export async function extractStreamUrl(embedUrl: string): Promise<ExtractedStrea
     const megaplayUrl = embedUrl
       .replace('vidwish.live', 'megaplay.buzz')
       .replace('megacloud.bloggy.click', 'megaplay.buzz');
-    return extractMegaplay(megaplayUrl);
+    return extractMegaplay(megaplayUrl, mediaType);
   }
 
   if (hostname.includes('megacloud.blog')) {
-    return extractMegacloud(embedUrl);
+    return extractMegacloud(embedUrl, parentReferer);
   }
 
   if (hostname.includes('vidtube.site')) {
-    return extractMegaplay(embedUrl);
+    return extractMegaplay(embedUrl, mediaType);
   }
 
   let currentUrl = embedUrl;
+  let html = '';
 
-  for (let i = 0; i < 2; i++) {
-    let html = '';
+  for (let i = 0; i < 3; i++) {
     try {
       let host = new URL(currentUrl).host;
       let referer = 'https://' + host + '/';
+      if (parentReferer) {
+        try {
+          referer = new URL(parentReferer).origin + '/';
+        } catch (_) {}
+      }
       let response;
 
       try {
         response = await axios.get<string>(currentUrl, {
           headers: { ...DEFAULT_HEADERS, Referer: referer },
-          timeout: 15000,
+          timeout: 5000,
         });
       } catch {
         if (currentUrl.includes('vidwish.live') || currentUrl.includes('megacloud.bloggy.click')) {
@@ -367,13 +448,18 @@ export async function extractStreamUrl(embedUrl: string): Promise<ExtractedStrea
             .replace('megacloud.bloggy.click', 'megaplay.buzz');
           host = new URL(fallbackUrl).host;
           referer = 'https://' + host + '/';
+          if (parentReferer) {
+            try {
+              referer = new URL(parentReferer).origin + '/';
+            } catch (_) {}
+          }
           response = await axios.get<string>(fallbackUrl, {
             headers: { ...DEFAULT_HEADERS, Referer: referer },
             timeout: 15000,
           });
           currentUrl = fallbackUrl;
         } else {
-          return null;
+          throw new Error('Initial fetch failed and no fallback available');
         }
       }
 
@@ -417,10 +503,11 @@ export async function extractStreamUrl(embedUrl: string): Promise<ExtractedStrea
         finalHost.includes('vidwish.live') ||
         finalHost.includes('vidtube.site')
       ) {
-        return await _doMegaplay(new URL(currentUrl).host, html, finalReferer);
+        const sParam = new URL(currentUrl).searchParams.get('s');
+        return await _doMegaplay(new URL(currentUrl).host, html, finalReferer, sParam, currentUrl, mediaType);
       }
       if (finalHost.includes('megacloud.blog')) {
-        return await _doMegacloud(currentUrl, html, finalReferer);
+        return await _doMegacloud(currentUrl, html, currentUrl);
       }
 
       return null;

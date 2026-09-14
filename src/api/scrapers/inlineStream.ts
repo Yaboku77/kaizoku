@@ -31,9 +31,9 @@ export async function fetchInlineStream(
   const id = String(animeId);
   const ep = String(epNum);
 
-  // VidStreaming 2 = MegaFlix (preferred)
-  const megaflixUrl = `https://www.megaflix.buzz/stream/ani/${id}/${ep}/sub`;
+  // MegaPlay (preferred)
   const megaplayUrl = `https://megaplay.buzz/stream/ani/${id}/${ep}/sub`;
+  const megaflixUrl = `https://www.megaflix.buzz/stream/ani/${id}/${ep}/sub`;
   const tryembedUrl = `https://tryembed.us.cc/embed/anime/${id}/${ep}/sub`;
   const cinexUrl = `https://cinextream.cc/api/embed/anime/sub/${id}/${ep}?color=7c6ee0`;
   const nontongoUrl = `https://nontongo.win/anime/${id}/${ep}/play`;
@@ -56,8 +56,8 @@ export async function fetchInlineStream(
     const errors: unknown[] = [];
 
     const tasks = [
-      tryMega(megaflixUrl),
       tryMega(megaplayUrl),
+      tryMega(megaflixUrl),
       tryOther(tryembedUrl),
       tryOther(cinexUrl),
       tryOther(nontongoUrl)

@@ -130,6 +130,8 @@ export default function BrowseScreen({ navigation, route }) {
         body: JSON.stringify({ query: BROWSE_QUERY, variables: vars }),
       });
       const json = await res.json();
+      if (!res.ok || json.errors) throw new Error("Anilist API error");
+
       if (json.data?.Page) {
         const items = json.data.Page.media.map(m => ({
           id: m.id,
@@ -165,7 +167,7 @@ export default function BrowseScreen({ navigation, route }) {
         }
       }
     } catch (e) {
-      console.log('Browse fetch failed:', e);
+      console.log('Browse fetch failed (AniList may be offline):', e);
     } finally {
       setLoading(false);
     }
@@ -322,9 +324,9 @@ export default function BrowseScreen({ navigation, route }) {
         ListFooterComponent={loading && results.length > 0 ? <ActivityIndicator size="small" color="#fff" style={{ margin: 20 }} /> : null}
         ListEmptyComponent={!loading ? (
           <View style={styles.emptyContainer}>
-            <Ionicons name="search-outline" size={40} color="#4b5563" />
+            <Ionicons name="wifi-outline" size={44} color="#4b5563" />
             <Text style={styles.emptyText}>No results found.</Text>
-            <Text style={styles.emptySubText}>Try adjusting your filters.</Text>
+            <Text style={styles.emptySubText}>AniList may be unavailable. Try again later.</Text>
           </View>
         ) : null}
         renderItem={({ item }) => <BrowseCard item={item} />}

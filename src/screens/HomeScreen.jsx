@@ -338,6 +338,7 @@ export default function HomeScreen({ navigation, route }) {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [isOffline, setIsOffline] = useState(false);
   const [activeHeroIndex, setActiveHeroIndex] = useState(0);
   const heroScrollRef = useRef(null);
   const heroTimerRef = useRef(null);
@@ -420,6 +421,7 @@ export default function HomeScreen({ navigation, route }) {
       randomPageRef.current = Math.floor(Math.random() * 200) + 1;
     }
     try {
+      if (reset) setIsOffline(false);
       const randomPageNum = randomPageRef.current;
       const res = await fetch('https://graphql.anilist.co', {
         method: 'POST',
@@ -430,6 +432,11 @@ export default function HomeScreen({ navigation, route }) {
         body: JSON.stringify({ query: HOME_QUERY, variables: { page: pageNum, randomPage: randomPageNum } }),
       });
       const json = await res.json();
+      
+      if (!res.ok || json.errors) {
+        throw new Error('Anilist API error or rate limit');
+      }
+
       if (json.data) {
         const d = json.data;
         // Match React app: use all trending for hero pool so filtering keeps enough
@@ -622,13 +629,11 @@ export default function HomeScreen({ navigation, route }) {
           setRecentReleases(prev => [...prev, ...releases]);
         }
       } else {
-        // Rate limited or API returned errors
-        console.log("AniList API returned no data:", json.errors);
-        setData(SCREENSHOT_FALLBACK_DATA);
-        startHeroTimer(SCREENSHOT_FALLBACK_DATA.heroItems);
+        throw new Error('Anilist API returned no data');
       }
     } catch (e) {
-      console.log('Home fetch error:', e);
+      console.log('Home fetch error:', e, '- showing offline state');
+      setIsOffline(true);
       setData(SCREENSHOT_FALLBACK_DATA);
       startHeroTimer(SCREENSHOT_FALLBACK_DATA.heroItems);
     } finally {
@@ -674,6 +679,14 @@ export default function HomeScreen({ navigation, route }) {
           </TouchableOpacity>
         </View>
       </View>
+
+      {/* AniList Offline Banner */}
+      {isOffline && (
+        <View style={{ backgroundColor: '#7c2d12', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingVertical: 8, gap: 8 }}>
+          <Ionicons name="wifi-outline" size={15} color="#fca5a5" />
+          <Text style={{ color: '#fca5a5', fontSize: 11.5, flex: 1 }}>AniList is unavailable. Showing cached data — tap any anime for live details via ani.zip.</Text>
+        </View>
+      )}
 
       <ScrollView
         showsVerticalScrollIndicator={false}
@@ -815,7 +828,7 @@ export default function HomeScreen({ navigation, route }) {
                     item={item}
                     onPress={() => navigation.navigate('Details', {
                       animeId: item.animeId,
-                      autoPlayEpisode: item.episodeIndex,
+                      autoPlayEpisode: item.episodeIndex
                     })}
                   />
                 ))
@@ -871,7 +884,7 @@ export default function HomeScreen({ navigation, route }) {
                       navigation.navigate('Details', {
                         animeId: c.animeId,
                         autoPlayEpisode: c.epNum ? Math.max(0, c.epNum - 1) : 0,
-                        openComments: true
+                        openComments: true,
                       });
                     }
                   }}

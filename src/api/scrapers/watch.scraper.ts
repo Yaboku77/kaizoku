@@ -47,6 +47,20 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   ]);
 }
 
+function makeProxyHelper() {
+  const rawBaseUrl = process.env.EXPO_PUBLIC_CF_WORKER_URL || 'https://aonime-proxy.bgtoons.workers.dev/';
+  let proxyBase = rawBaseUrl.trim();
+  if (proxyBase && !proxyBase.startsWith('http') && !proxyBase.startsWith('/')) {
+    proxyBase = `https://${proxyBase}`;
+  }
+  const proxySep = proxyBase.includes('?') ? '&' : '?';
+  return (targetUrl: string, referer?: string) => {
+    if (!targetUrl) return targetUrl;
+    const refererParam = referer ? `&referer=${encodeURIComponent(referer)}` : '';
+    return `${proxyBase}${proxySep}url=${encodeURIComponent(targetUrl)}${refererParam}`;
+  };
+}
+
 export async function scrapeWatch(
   slug: string,
   epNum: string,
@@ -119,6 +133,8 @@ export async function scrapeWatch(
       }
     }));
   })();
+
+  const getProxyUrl = makeProxyHelper();
 
   // START fetch the full server list via AJAX (slower)
   const backupTasks = (async () => {
@@ -218,9 +234,14 @@ export async function scrapeWatch(
                           ).catch(() => null);
                         }
                         if (extracted) {
-                          sourceEntry.m3u8 = extracted.m3u8;
+                          sourceEntry.m3u8 = extracted.m3u8 ? getProxyUrl(extracted.m3u8, extracted.referer) : extracted.m3u8;
                           if (extracted.referer) sourceEntry.referer = extracted.referer;
-                          if (extracted.tracks?.length) sourceEntry.tracks = extracted.tracks;
+                          if (extracted.tracks?.length) {
+                            sourceEntry.tracks = extracted.tracks.map(t => ({
+                              ...t,
+                              file: t.file ? getProxyUrl(t.file, extracted.referer) : t.file
+                            }));
+                          }
                           if (extracted.intro) sourceEntry.intro = extracted.intro;
                           if (extracted.outro) sourceEntry.outro = extracted.outro;
                           if (extracted.allSources?.length) sourceEntry.allSources = extracted.allSources;

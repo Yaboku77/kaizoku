@@ -49,7 +49,7 @@ export default function DetailsScreen({ route, navigation }) {
   const { play } = usePlayer();
   const { user } = useAuth();
   const { openAuthModal } = useAuthModal();
-  const { animeId } = route.params;
+  const { animeId, isJikanFallback } = route.params; // isJikanFallback kept for nav compat — now triggers ani.zip fallback
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState(null);
   const [episodes, setEpisodes] = useState([]);
@@ -189,6 +189,11 @@ export default function DetailsScreen({ route, navigation }) {
         body: JSON.stringify({ query: DETAILS_QUERY, variables: { id: parseInt(animeId) } }),
       });
       const json = await res.json();
+
+      if (!res.ok || json.errors) {
+        throw new Error('Anilist API error');
+      }
+
       if (json.data?.Media) {
         const m = json.data.Media;
         const processed = {
@@ -273,9 +278,128 @@ export default function DetailsScreen({ route, navigation }) {
             })
             .catch(() => { });
         }
+      } else {
+        throw new Error('No Media data found in Anilist response');
       }
     } catch (e) {
-      console.log('Details fetch error:', e);
+      console.log('Details fetch error:', e, 'Falling back to api.ani.zip...');
+      try {
+        await fetchAniZipDetails(animeId);
+      } catch (fallbackError) {
+        console.log('ani.zip fallback failed:', fallbackError);
+        setLoading(false);
+      }
+      return; // fetchAniZipDetails handles setLoading internally
+    }
+    setLoading(false);
+  };
+
+  // ─── ani.zip fallback ──────────────────────────────────────────────────────
+  const fetchAniZipDetails = async (anilistId) => {
+    try {
+      const aniZipRes = await fetch(`https://api.ani.zip/mappings?anilist_id=${anilistId}`);
+      if (!aniZipRes.ok) throw new Error('ani.zip API error');
+      const aniZipData = await aniZipRes.json();
+
+      if (!aniZipData || !aniZipData.mappings) throw new Error('No ani.zip data');
+
+      const mappings = aniZipData.mappings;
+      const titles = aniZipData.titles || {};
+      const images = aniZipData.images || [];
+      const episodesMap = aniZipData.episodes || {};
+
+      // Extract images by type
+      const fanartImage = images.find(img => img.coverType === 'Fanart')?.url || '';
+      const posterImage = images.find(img => img.coverType === 'Poster')?.url || '';
+      const bannerImage = images.find(img => img.coverType === 'Banner')?.url || '';
+
+      // Build episode list from the episodes map
+      const episodeList = Object.values(episodesMap)
+        .filter(ep => !isNaN(parseInt(ep.episode))) // only numbered episodes, not specials
+        .sort((a, b) => parseInt(a.episode) - parseInt(b.episode))
+        .map(ep => ({
+          name: ep.title?.en || ep.title?.['x-jat'] || `Episode ${ep.episode}`,
+          episode_number: parseInt(ep.episode),
+          absolute_episode_number: ep.absoluteEpisodeNumber || parseInt(ep.episode),
+          air_date: ep.airDate || ep.airdate || '',
+          still_path: ep.image ? ep.image.replace('https://artworks.thetvdb.com/banners/', '') : null,
+          overview: ep.overview || ep.summary || '',
+          runtime: ep.runtime || ep.length || null,
+          _tvdbImage: ep.image || null, // full URL already
+        }));
+
+      const processed = {
+        id: anilistId,
+        idMal: mappings.mal_id || null,
+        aniZipTmdbId: mappings.themoviedb_id || null,
+        title: titles.en || titles['x-jat'] || 'Unknown',
+        nativeTitle: titles.ja || '',
+        synonyms: [],
+        bannerImage: fanartImage || bannerImage || '',
+        coverImage: posterImage || '',
+        status: '',
+        format: 'TV Show',
+        season: null,
+        seasonYear: null,
+        description: '',
+        averageScore: '?',
+        duration: '?',
+        startDate: null,
+        endDate: null,
+        source: '',
+        countryOfOrigin: 'JP',
+        genres: [],
+        tags: [],
+        studios: [],
+        externalLinks: [],
+        trailer: null,
+        characters: [],
+        staff: [],
+        relations: [],
+        recommendations: [],
+        episodeCount: aniZipData.episodeCount || episodeList.length,
+        nextAiringEpisode: null,
+        isAniZipFallback: true,
+      };
+
+      setData(processed);
+
+      // Use episodes from ani.zip directly
+      if (episodeList.length > 0) {
+        // Map to app episode format, using TVDB images directly
+        const mapped = episodeList.map(ep => ({
+          ...ep,
+          still_path: null, // we'll use _tvdbImage instead
+        }));
+        setEpisodes(mapped);
+      } else if (processed.episodeCount) {
+        // Generate dummy episodes as last resort
+        setEpisodes(Array.from({ length: processed.episodeCount }).map((_, i) => ({
+          name: `Episode ${i + 1}`,
+          episode_number: i + 1,
+          absolute_episode_number: i + 1,
+        })));
+      }
+
+      // Try to get backdrop from TMDB using the direct TMDB ID from ani.zip mappings
+      if (mappings.themoviedb_id && TMDB_KEY) {
+        try {
+          const tmdbRes = await tmdbFetch(`https://api.themoviedb.org/3/tv/${mappings.themoviedb_id}?api_key=${TMDB_KEY}`);
+          const tmdbData = await tmdbRes.json();
+          if (tmdbData.backdrop_path) {
+            setData(prev => prev ? { ...prev, bannerImage: `https://image.tmdb.org/t/p/original${tmdbData.backdrop_path}` } : prev);
+          }
+          if (!posterImage && tmdbData.poster_path) {
+            setData(prev => prev ? { ...prev, coverImage: `https://image.tmdb.org/t/p/w500${tmdbData.poster_path}` } : prev);
+          }
+        } catch (tmdbErr) {
+          console.log('TMDB direct fetch failed:', tmdbErr);
+        }
+      }
+
+    } catch (e) {
+      console.log('fetchAniZipDetails error:', e);
+      throw e;
     } finally {
       setLoading(false);
     }
@@ -321,6 +445,14 @@ export default function DetailsScreen({ route, navigation }) {
       const tmdbId = bestShow.id;
       const tvRes = await tmdbFetch(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_KEY}`);
       const tvData = await tvRes.json();
+
+      // Inject TMDB backdrop for fallback modes (if not already set via ani.zip direct TMDB lookup)
+      if (d.isAniZipFallback && !d.bannerImage && tvData.backdrop_path) {
+        setData(prev => prev ? { ...prev, bannerImage: `https://image.tmdb.org/t/p/original${tvData.backdrop_path}` } : prev);
+      } else if (d.isJikanFallback && tvData.backdrop_path) {
+        setData(prev => prev ? { ...prev, bannerImage: `https://image.tmdb.org/t/p/original${tvData.backdrop_path}` } : prev);
+      }
+
       const seasons = tvData.seasons?.filter(s => s.season_number > 0) || [];
 
       let targetSeason = 1;
@@ -739,7 +871,7 @@ export default function DetailsScreen({ route, navigation }) {
                   >
                     <View style={S.epThumb}>
                       <Image
-                        source={{ uri: ep.still_path ? `https://tmdb-proxy.bgtoons.workers.dev/t/p/w300${ep.still_path}` : data.coverImage }}
+                        source={{ uri: ep._tvdbImage || (ep.still_path ? `https://tmdb-proxy.bgtoons.workers.dev/t/p/w300${ep.still_path}` : data.coverImage) }}
                         style={StyleSheet.absoluteFill}
                         resizeMode="cover"
                       />

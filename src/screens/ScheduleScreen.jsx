@@ -63,9 +63,12 @@ export default function ScheduleScreen({ navigation }) {
         }),
       });
       const json = await res.json();
+      if (!res.ok || json.errors) throw new Error("Anilist API error");
+
       setSchedule(json.data?.Page?.airingSchedules || []);
     } catch (e) {
-      console.log('Schedule fetch failed:', e);
+      console.log('Schedule fetch failed (AniList may be offline):', e);
+      setSchedule([]);
     } finally {
       setLoading(false);
     }
@@ -145,7 +148,11 @@ export default function ScheduleScreen({ navigation }) {
             </View>
           ))
         ) : schedule.length === 0 ? (
-          <Text style={styles.emptyText}>No schedule available for this date.</Text>
+          <View style={{ alignItems: 'center', paddingTop: 80, paddingHorizontal: 32 }}>
+            <Ionicons name="wifi-outline" size={44} color="#374151" />
+            <Text style={[styles.emptyText, { marginTop: 16 }]}>No schedule available.</Text>
+            <Text style={{ color: '#4b5563', fontSize: 12, textAlign: 'center', marginTop: 6 }}>AniList may be unavailable. Try again later.</Text>
+          </View>
         ) : (
           schedule.map((item, index) => (
             <View key={item.id} style={styles.scheduleRow}>
