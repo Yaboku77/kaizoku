@@ -22,6 +22,12 @@ import HistoryScreen from '../screens/HistoryScreen';
 const Tab   = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
 
+const HomeTab = (props) => <AnimatedTabWrapper><HomeScreen {...props} /></AnimatedTabWrapper>;
+const ScheduleTab = (props) => <AnimatedTabWrapper><ScheduleScreen {...props} /></AnimatedTabWrapper>;
+const BrowseTab = (props) => <AnimatedTabWrapper><BrowseScreen {...props} /></AnimatedTabWrapper>;
+const MyListTab = (props) => <AnimatedTabWrapper><MyListScreen {...props} /></AnimatedTabWrapper>;
+const YouTab = (props) => <AnimatedTabWrapper><YouScreen {...props} /></AnimatedTabWrapper>;
+
 function BottomTabs() {
   return (
     <Tab.Navigator
@@ -55,21 +61,11 @@ function BottomTabs() {
         },
       })}
     >
-      <Tab.Screen name="Home">
-        {(props) => <AnimatedTabWrapper><HomeScreen {...props} /></AnimatedTabWrapper>}
-      </Tab.Screen>
-      <Tab.Screen name="Schedule">
-        {(props) => <AnimatedTabWrapper><ScheduleScreen {...props} /></AnimatedTabWrapper>}
-      </Tab.Screen>
-      <Tab.Screen name="Browse">
-        {(props) => <AnimatedTabWrapper><BrowseScreen {...props} /></AnimatedTabWrapper>}
-      </Tab.Screen>
-      <Tab.Screen name="My List">
-        {(props) => <AnimatedTabWrapper><MyListScreen {...props} /></AnimatedTabWrapper>}
-      </Tab.Screen>
-      <Tab.Screen name="You">
-        {(props) => <AnimatedTabWrapper><YouScreen {...props} /></AnimatedTabWrapper>}
-      </Tab.Screen>
+      <Tab.Screen name="Home" component={HomeTab} />
+      <Tab.Screen name="Schedule" component={ScheduleTab} />
+      <Tab.Screen name="Browse" component={BrowseTab} />
+      <Tab.Screen name="My List" component={MyListTab} />
+      <Tab.Screen name="You" component={YouTab} />
     </Tab.Navigator>
   );
 }

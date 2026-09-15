@@ -48,9 +48,9 @@ const TMDB_KEY = TMDB_API_KEY;
 const EPISODES_PER_PAGE = 25;
 // Preferred server order (from API: VidPlay-1, HD-1, Vidstream-2, VidCloud-1)
 // Server preference order — names must match what anikoto returns in the AJAX server list
-const PREFERRED_SERVERS = ['MegaPlay', 'Vidstream', 'VidPlay', 'HD-1', 'VidCloud', 'Kiwi Stream'];
+const PREFERRED_SERVERS = ['HD-2', 'MegaPlay', 'Vidstream', 'VidPlay', 'HD-1', 'VidCloud', 'Kiwi Stream'];
 // Also check these substrings to match partial server names (case-insensitive)
-const PREFERRED_SERVER_PATTERNS = ['megaplay', 'vidstream', 'vidplay', 'hd-1', 'vidcloud', 'kiwi'];
+const PREFERRED_SERVER_PATTERNS = ['hd-2', 'megaplay', 'vidstream', 'vidplay', 'hd-1', 'vidcloud', 'kiwi'];
 
 // ─── Episode Card (matches web EpisodeCard) ──────────────────────────────────
 function EpisodeCard({ ep, isActive, coverImage, onPress }) {
