@@ -8,6 +8,8 @@ import { PlayerProvider, usePlayer } from './src/context/PlayerContext';
 import { AuthProvider, useAuth } from './src/context/AuthContext';
 import { AuthModalProvider } from './src/context/AuthModalContext';
 import GlobalPlayer from './src/screens/PlayerScreen';
+import GlobalNotificationPopup from './src/components/GlobalNotificationPopup';
+import AppUpdatePopup from './src/components/AppUpdatePopup';
 
 import { useFonts, Shojumaru_400Regular } from '@expo-google-fonts/shojumaru';
 import * as SplashScreenNative from 'expo-splash-screen';
@@ -57,6 +59,8 @@ export default function App() {
               <StatusBar style="light" backgroundColor="#000000" translucent />
               <AppNavigator />
               <GlobalPlayer />
+              <GlobalNotificationPopup />
+              <AppUpdatePopup />
               <SplashScreen visible={showSplash} />
             </PlayerProvider>
           </AuthModalProvider>

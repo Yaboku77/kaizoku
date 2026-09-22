@@ -6,11 +6,31 @@ import {
 import { db } from '../firebase';
 
 // ─── Firestore paths ───────────────────────────────────────────────
+// app_settings/notification          ← global app popup notifications
 // users/{uid}/history/{animeId}      ← watch history
 // users/{uid}/list/{animeId}         ← watchlist
 // users/{uid}/settings/prefs         ← app/player settings
 // anime/{animeId}                    ← aggregate like/dislike counts
 // anime/{animeId}/reactions/{uid}    ← per-user reaction record
+
+// ─── GLOBAL APP SETTINGS ───────────────────────────────────────────────────────
+
+/**
+ * Fetch the global app notification setting from Firestore.
+ */
+export async function getGlobalNotification() {
+  try {
+    const ref = doc(db, 'app_settings', 'notification');
+    const snap = await getDoc(ref);
+    if (snap.exists()) {
+      return snap.data();
+    }
+    return null;
+  } catch (e) {
+    console.log('[Firestore] getGlobalNotification error:', e?.message);
+    return null;
+  }
+}
 
 // ─── HISTORY ─────────────────────────────────────────────────────────────────
 
