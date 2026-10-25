@@ -14,8 +14,11 @@ import { getHistoryFromCloud } from '../api/firestore';
 import { useAuth } from '../context/AuthContext';
 import { HOME_QUERY } from '../data/queries';
 import { SCREENSHOT_FALLBACK_DATA, FALLBACK_COMMENTS } from '../data/mockData';
-import { scrapeSubDubForTitles } from '../api/scrapers/search.scraper';
 import { fetchInlineStream } from '../api/scrapers/inlineStream';
+import { safeNavigate } from '../utils/navigationHelper';
+
+let cachedHomeData = null;
+const tmdbLogoCache = new Map();
 
 const { width, height } = Dimensions.get('window');
 const HERO_HEIGHT = height * 0.72;
@@ -332,10 +335,10 @@ function HeroIndicators({ items, activeIndex, onPress }) {
 export default function HomeScreen({ navigation, route }) {
   const insets = useSafeAreaInsets();
   const { user } = useAuth();
-  const [data, setData] = useState(SCREENSHOT_FALLBACK_DATA);
+  const [data, setData] = useState(cachedHomeData || SCREENSHOT_FALLBACK_DATA);
   const [recentReleases, setRecentReleases] = useState([]);
   const [history, setHistory] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!cachedHomeData);
   const [refreshing, setRefreshing] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [isOffline, setIsOffline] = useState(false);
@@ -416,7 +419,7 @@ export default function HomeScreen({ navigation, route }) {
   }, []);
 
   const fetchHome = useCallback(async (pageNum = 1, reset = false) => {
-    if (reset) {
+    if (reset && !cachedHomeData) {
       setLoading(true);
       randomPageRef.current = Math.floor(Math.random() * 200) + 1;
     }
@@ -439,12 +442,12 @@ export default function HomeScreen({ navigation, route }) {
 
       if (json.data) {
         const d = json.data;
-        // Match React app: use all trending for hero pool so filtering keeps enough
         const heroRaw = d.trending?.media?.slice(0, 10) || [];
         const heroItemsRaw = heroRaw.map(m => ({
           id: m.id,
           title: m.title?.english || m.title?.romaji || 'Unknown',
           image: m.coverImage?.extraLarge || m.bannerImage || '',
+          titleImage: tmdbLogoCache.get(m.id) || null,
           type: m.format === 'TV' ? 'TV Show' : (m.format || 'TV Show'),
           status: m.status === 'RELEASING' ? 'AIRING' : (m.status || ''),
           year: String(m.seasonYear || ''),
@@ -455,6 +458,7 @@ export default function HomeScreen({ navigation, route }) {
           image: m.coverImage?.extraLarge || '',
           type: m.format === 'TV' ? 'TV Show' : (m.format || 'TV'),
           year: m.seasonYear, status: m.status,
+          hasSub: true,
         })) || SCREENSHOT_FALLBACK_DATA.trending;
 
         const popular = d.popular?.media?.map(m => ({
@@ -462,6 +466,7 @@ export default function HomeScreen({ navigation, route }) {
           image: m.coverImage?.extraLarge || '',
           type: m.format === 'TV' ? 'TV Show' : (m.format || 'TV'),
           year: m.seasonYear, status: m.status,
+          hasSub: true,
         })) || SCREENSHOT_FALLBACK_DATA.popular;
 
         const random = d.random?.media?.map(m => ({
@@ -469,26 +474,8 @@ export default function HomeScreen({ navigation, route }) {
           image: m.coverImage?.extraLarge || '',
           type: m.format === 'TV' ? 'TV Show' : (m.format || 'TV'),
           year: m.seasonYear, status: m.status,
+          hasSub: true,
         })) || [];
-
-        // ── Enrich cards with sub/dub info from anikoto (fire-and-forget enrichment) ──
-        const allCards = [...trending, ...popular, ...random];
-        const allTitles = allCards.map(c => c.title);
-        scrapeSubDubForTitles(allTitles)
-          .then(subDubMap => {
-            const normTitle = (t) => t.toLowerCase().replace(/[^a-z0-9]/g, '');
-            const enrich = (arr) => arr.map(c => {
-              const info = subDubMap[normTitle(c.title)];
-              return info ? { ...c, hasSub: info.hasSub, hasDub: info.hasDub } : c;
-            });
-            setData(prev => ({
-              ...prev,
-              trending: enrich(prev.trending || []),
-              popular: enrich(prev.popular || []),
-              random: enrich(prev.random || []),
-            }));
-          })
-          .catch(() => { }); // silently fail — badges just won't show
 
         const upRaw = d.upcoming?.media?.[0];
         const upcoming = upRaw ? {
@@ -528,114 +515,139 @@ export default function HomeScreen({ navigation, route }) {
           };
         }) || [];
 
-        let recentComments = [];
-        try {
-          const commentRes = await fetch('https://graphql.anilist.co', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json'
-            },
-            body: JSON.stringify({
-              query: `query { Page(page: 1, perPage: 3) { threadComments(sort: ID_DESC) { id comment(asHtml: true) createdAt user { name avatar { medium } } thread { title mediaCategories { id title { romaji english } } } } } }`
-            })
-          });
-          const commentJson = await commentRes.json();
-          if (commentJson.data?.Page?.threadComments) {
-            recentComments = commentJson.data.Page.threadComments.map(c => {
-              const media = c.thread?.mediaCategories?.[0];
-              let epNum = null;
-              if (c.thread?.title) {
-                const epMatch = c.thread.title.match(/Episode\s(\d+)/i);
-                if (epMatch) {
-                  epNum = parseInt(epMatch[1], 10);
-                }
-              }
-              return {
-                id: String(c.id),
-                anime: media?.title?.english || media?.title?.romaji || c.thread?.title || 'Unknown',
-                animeId: media?.id || null,
-                epNum: epNum,
-                user: c.user?.name || 'Anonymous',
-                avatar: c.user?.avatar?.medium,
-                time: formatTimeAgo(c.createdAt),
-                text: c.comment?.replace(/<[^>]*>?/gm, '').trim() || '',
-                likes: 0,
-                replies: 0,
-              };
-            });
-          } else if (commentJson.errors) {
-            console.log("AniList Comments API Error:", commentJson.errors);
-          }
-        } catch (err) {
-          console.log("Failed to fetch comments separately", err);
-        }
+        // ── IMMEDIATELY DISPLAY THE PAGE (ZERO WAIT FOR TMDB OR COMMENTS) ──
+        const initialHome = {
+          heroItems: heroItemsRaw,
+          trending,
+          popular,
+          random,
+          upcoming,
+          recentComments: cachedHomeData?.recentComments || []
+        };
+        cachedHomeData = initialHome;
+        setData(initialHome);
+        setLoading(false);
+        setRefreshing(false);
+        setIsLoadingMore(false);
+        startHeroTimer(heroItemsRaw);
 
-        // Fetch TMDB logos — exact match of React app logic (no extra query filters)
-        const heroWithLogos = await Promise.all(
-          heroItemsRaw.map(async (hero) => {
-            let titleImage = null;
-            try {
-              // Step 1: Try TV search (exact same as React app — no extra filters)
-              const searchRes = await tmdbFetch(
-                `https://api.themoviedb.org/3/search/tv?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(hero.title)}`
-              );
-              const searchData = await searchRes.json();
-              if (searchData.results?.length > 0) {
-                let tmdbId = searchData.results[0].id;
-                const animeResult = searchData.results.find(r => r.original_language === 'ja' || (r.genre_ids && r.genre_ids.includes(16)));
-                if (animeResult) tmdbId = animeResult.id;
-                const imgRes = await tmdbFetch(`https://api.themoviedb.org/3/tv/${tmdbId}/images?api_key=${TMDB_API_KEY}`);
-                const imgData = await imgRes.json();
-                if (imgData.logos?.length > 0) {
-                  const enLogo = imgData.logos.find(l => l.iso_639_1 === 'en');
-                  const selectedLogo = enLogo || imgData.logos[0];
-                  titleImage = `https://tmdb-proxy.bgtoons.workers.dev/t/p/w500${selectedLogo.file_path}`;
-                }
-              }
-              // Step 2: Fallback to movie search (anime films not in TV db)
-              if (!titleImage) {
-                const movieRes = await tmdbFetch(
-                  `https://api.themoviedb.org/3/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(hero.title)}`
-                );
-                const movieData = await movieRes.json();
-                if (movieData.results?.length > 0) {
-                  const mid = movieData.results[0].id;
-                  const mImgRes = await tmdbFetch(`https://api.themoviedb.org/3/movie/${mid}/images?api_key=${TMDB_API_KEY}`);
-                  const mImgData = await mImgRes.json();
-                  if (mImgData.logos?.length > 0) {
-                    const enLogo = mImgData.logos.find(l => l.iso_639_1 === 'en');
-                    const selectedLogo = enLogo || mImgData.logos[0];
-                    titleImage = `https://tmdb-proxy.bgtoons.workers.dev/t/p/w500${selectedLogo.file_path}`;
-                  }
-                }
-              }
-            } catch (_) { }
-            return titleImage ? { ...hero, titleImage } : null;
-          })
-        );
-
-        // Only keep heroes that have a logo (matching React app: filteredHeroItems)
-        const filteredHeroes = heroWithLogos.filter(Boolean);
-        const finalHeroes = filteredHeroes.length > 0 ? filteredHeroes : heroItemsRaw;
-
-        const newData = { heroItems: finalHeroes, trending, popular, random, upcoming, recentComments };
-        setData(newData);
-        startHeroTimer(finalHeroes);
         if (reset) {
           setRecentReleases(releases);
           releasePage.current = 1;
         } else {
           setRecentReleases(prev => [...prev, ...releases]);
         }
+
+        // ── ASYNC BACKGROUND: Fetch Comments (non-blocking) ──
+        (async () => {
+          try {
+            const commentRes = await fetch('https://graphql.anilist.co', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json'
+              },
+              body: JSON.stringify({
+                query: `query { Page(page: 1, perPage: 3) { threadComments(sort: ID_DESC) { id comment(asHtml: true) createdAt user { name avatar { medium } } thread { title mediaCategories { id title { romaji english } } } } } }`
+              })
+            });
+            const commentJson = await commentRes.json();
+            if (commentJson.data?.Page?.threadComments) {
+              const comments = commentJson.data.Page.threadComments.map(c => {
+                const media = c.thread?.mediaCategories?.[0];
+                let epNum = null;
+                if (c.thread?.title) {
+                  const epMatch = c.thread.title.match(/Episode\s(\d+)/i);
+                  if (epMatch) epNum = parseInt(epMatch[1], 10);
+                }
+                return {
+                  id: String(c.id),
+                  anime: media?.title?.english || media?.title?.romaji || c.thread?.title || 'Unknown',
+                  animeId: media?.id || null,
+                  epNum: epNum,
+                  user: c.user?.name || 'Anonymous',
+                  avatar: c.user?.avatar?.medium,
+                  time: formatTimeAgo(c.createdAt),
+                  text: c.comment?.replace(/<[^>]*>?/gm, '').trim() || '',
+                  likes: 0,
+                  replies: 0,
+                };
+              });
+              setData(prev => {
+                const updated = { ...prev, recentComments: comments };
+                cachedHomeData = updated;
+                return updated;
+              });
+            }
+          } catch (_) { }
+        })();
+
+        // ── ASYNC BACKGROUND: Fetch TMDB logos (non-blocking & cached) ──
+        (async () => {
+          try {
+            const heroWithLogos = await Promise.all(
+              heroItemsRaw.map(async (hero) => {
+                if (tmdbLogoCache.has(hero.id)) {
+                  return { ...hero, titleImage: tmdbLogoCache.get(hero.id) };
+                }
+                let titleImage = null;
+                try {
+                  const searchRes = await tmdbFetch(
+                    `https://api.themoviedb.org/3/search/tv?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(hero.title)}`
+                  );
+                  const searchData = await searchRes.json();
+                  if (searchData.results?.length > 0) {
+                    let tmdbId = searchData.results[0].id;
+                    const animeResult = searchData.results.find(r => r.original_language === 'ja' || (r.genre_ids && r.genre_ids.includes(16)));
+                    if (animeResult) tmdbId = animeResult.id;
+                    const imgRes = await tmdbFetch(`https://api.themoviedb.org/3/tv/${tmdbId}/images?api_key=${TMDB_API_KEY}`);
+                    const imgData = await imgRes.json();
+                    if (imgData.logos?.length > 0) {
+                      const enLogo = imgData.logos.find(l => l.iso_639_1 === 'en');
+                      const selectedLogo = enLogo || imgData.logos[0];
+                      titleImage = `https://tmdb-proxy.bgtoons.workers.dev/t/p/w500${selectedLogo.file_path}`;
+                      tmdbLogoCache.set(hero.id, titleImage);
+                    }
+                  }
+                  if (!titleImage) {
+                    const movieRes = await tmdbFetch(
+                      `https://api.themoviedb.org/3/search/movie?api_key=${TMDB_API_KEY}&query=${encodeURIComponent(hero.title)}`
+                    );
+                    const movieData = await movieRes.json();
+                    if (movieData.results?.length > 0) {
+                      const mid = movieData.results[0].id;
+                      const mImgRes = await tmdbFetch(`https://api.themoviedb.org/3/movie/${mid}/images?api_key=${TMDB_API_KEY}`);
+                      const mImgData = await mImgRes.json();
+                      if (mImgData.logos?.length > 0) {
+                        const enLogo = mImgData.logos.find(l => l.iso_639_1 === 'en');
+                        const selectedLogo = enLogo || mImgData.logos[0];
+                        titleImage = `https://tmdb-proxy.bgtoons.workers.dev/t/p/w500${selectedLogo.file_path}`;
+                        tmdbLogoCache.set(hero.id, titleImage);
+                      }
+                    }
+                  }
+                } catch (_) { }
+                return titleImage ? { ...hero, titleImage } : hero;
+              })
+            );
+            setData(prev => {
+              const updated = { ...prev, heroItems: heroWithLogos };
+              cachedHomeData = updated;
+              return updated;
+            });
+          } catch (_) { }
+        })();
+
       } else {
         throw new Error('Anilist API returned no data');
       }
     } catch (e) {
       console.log('Home fetch error:', e, '- showing offline state');
-      setIsOffline(true);
-      setData(SCREENSHOT_FALLBACK_DATA);
-      startHeroTimer(SCREENSHOT_FALLBACK_DATA.heroItems);
+      if (!cachedHomeData) {
+        setIsOffline(true);
+        setData(SCREENSHOT_FALLBACK_DATA);
+        startHeroTimer(SCREENSHOT_FALLBACK_DATA.heroItems);
+      }
     } finally {
       setLoading(false);
       setRefreshing(false);
@@ -661,7 +673,9 @@ export default function HomeScreen({ navigation, route }) {
     fetchHome(releasePage.current, false);
   }, [isLoadingMore, fetchHome]);
 
-  const goToDetails = (id, autoPlayEpisodeIndex) => navigation.navigate('Details', { animeId: id, autoPlayEpisode: autoPlayEpisodeIndex });
+  const goToDetails = (id, autoPlayEpisodeIndex, extra) => {
+    safeNavigate(navigation, 'Details', { animeId: id, autoPlayEpisode: autoPlayEpisodeIndex, ...extra });
+  };
 
   const heroItems = data.heroItems || [];
 
@@ -671,10 +685,10 @@ export default function HomeScreen({ navigation, route }) {
       <View style={[styles.header, { paddingTop: insets.top + 8 }]} pointerEvents="box-none">
         <Text style={styles.logo}>KAIZOKU</Text>
         <View style={styles.headerIcons}>
-          <TouchableOpacity onPress={() => navigation.navigate('Notifications')} style={styles.headerIconBtn}>
+          <TouchableOpacity onPress={() => safeNavigate(navigation, 'Notifications')} style={styles.headerIconBtn}>
             <Ionicons name="notifications-outline" size={22} color="#e5e7eb" />
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => navigation.navigate('Search')} style={styles.headerIconBtn}>
+          <TouchableOpacity onPress={() => safeNavigate(navigation, 'Search')} style={styles.headerIconBtn}>
             <Ionicons name="search-outline" size={22} color="#e5e7eb" />
           </TouchableOpacity>
         </View>
@@ -721,7 +735,7 @@ export default function HomeScreen({ navigation, route }) {
                 <TouchableOpacity
                   key={`hero-${hero.id}-${index}`}
                   style={{ width, height: HERO_HEIGHT }}
-                  onPress={() => goToDetails(hero.id)}
+                  onPress={() => goToDetails(hero.id, undefined, { animeTitle: hero.title, coverImage: hero.image, type: hero.type, year: hero.year, status: hero.status })}
                   activeOpacity={0.95}
                 >
                   <Image
@@ -781,7 +795,10 @@ export default function HomeScreen({ navigation, route }) {
               <View style={styles.heroButtons}>
                 <TouchableOpacity
                   style={styles.watchNowBtn}
-                  onPress={() => goToDetails(heroItems[activeHeroIndex]?.id)}
+                  onPress={() => {
+                    const h = heroItems[activeHeroIndex];
+                    if (h) goToDetails(h.id, undefined, { animeTitle: h.title, coverImage: h.image, type: h.type, year: h.year, status: h.status });
+                  }}
                 >
                   <Text style={styles.watchNowText}>Watch Now</Text>
                 </TouchableOpacity>
@@ -810,7 +827,7 @@ export default function HomeScreen({ navigation, route }) {
           <View style={styles.section}>
             <SectionHeader
               title="Dive Back In"
-              onPress={() => navigation.navigate('You')}
+              onPress={() => safeNavigate(navigation, 'You')}
             />
             <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.hScroll} contentContainerStyle={styles.hScrollContent}>
               {loading ? (
@@ -826,9 +843,11 @@ export default function HomeScreen({ navigation, route }) {
                   <DiveBackInCard
                     key={`dive-${item.animeId}-${item.episodeIndex}-${idx}`}
                     item={item}
-                    onPress={() => navigation.navigate('Details', {
+                    onPress={() => safeNavigate(navigation, 'Details', {
                       animeId: item.animeId,
-                      autoPlayEpisode: item.episodeIndex
+                      autoPlayEpisode: item.episodeIndex,
+                      animeTitle: item.animeTitle,
+                      coverImage: item.episodeImage || item.coverImage,
                     })}
                   />
                 ))
@@ -841,13 +860,17 @@ export default function HomeScreen({ navigation, route }) {
         <View style={styles.section}>
           <SectionHeader
             title="Trending Now"
-            onPress={() => navigation.navigate('BrowseStack', { initialFilters: { sort: 'Trending' } })}
+            onPress={() => safeNavigate(navigation, 'BrowseStack', { initialFilters: { sort: 'Trending' } })}
           />
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.hScroll} contentContainerStyle={styles.hScrollContent}>
             {loading
               ? Array.from({ length: 8 }).map((_, i) => <AnimatedShimmer key={i} style={styles.skeletonCard} />)
               : (data.trending || []).map(anime => (
-                <AnimeCard key={`t-${anime.id}`} data={anime} onPress={() => goToDetails(anime.id)} />
+                <AnimeCard
+                  key={`t-${anime.id}`}
+                  data={anime}
+                  onPress={() => goToDetails(anime.id, undefined, { animeTitle: anime.title, coverImage: anime.image, type: anime.type, year: anime.year, status: anime.status })}
+                />
               ))
             }
           </ScrollView>
@@ -881,10 +904,11 @@ export default function HomeScreen({ navigation, route }) {
                   activeOpacity={0.8}
                   onPress={() => {
                     if (c.animeId) {
-                      navigation.navigate('Details', {
+                      safeNavigate(navigation, 'Details', {
                         animeId: c.animeId,
                         autoPlayEpisode: c.epNum ? Math.max(0, c.epNum - 1) : 0,
                         openComments: true,
+                        animeTitle: c.anime,
                       });
                     }
                   }}
@@ -900,13 +924,17 @@ export default function HomeScreen({ navigation, route }) {
         <View style={styles.section}>
           <SectionHeader
             title="Popular This Season"
-            onPress={() => navigation.navigate('BrowseStack', { initialFilters: { sort: 'Popularity' } })}
+            onPress={() => safeNavigate(navigation, 'BrowseStack', { initialFilters: { sort: 'Popularity' } })}
           />
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.hScroll} contentContainerStyle={styles.hScrollContent}>
             {loading
               ? Array.from({ length: 6 }).map((_, i) => <AnimatedShimmer key={i} style={styles.skeletonCard} />)
               : (data.popular || []).map(anime => (
-                <AnimeCard key={`p-${anime.id}`} data={anime} onPress={() => goToDetails(anime.id)} />
+                <AnimeCard
+                  key={`p-${anime.id}`}
+                  data={anime}
+                  onPress={() => goToDetails(anime.id, undefined, { animeTitle: anime.title, coverImage: anime.image, type: anime.type, year: anime.year, status: anime.status })}
+                />
               ))
             }
           </ScrollView>
@@ -916,13 +944,17 @@ export default function HomeScreen({ navigation, route }) {
         <View style={styles.section}>
           <SectionHeader
             title="Random Animes"
-            onPress={() => navigation.navigate('BrowseStack', { initialFilters: { sort: 'Popularity' } })}
+            onPress={() => safeNavigate(navigation, 'BrowseStack', { initialFilters: { sort: 'Popularity' } })}
           />
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.hScroll} contentContainerStyle={styles.hScrollContent}>
             {loading
               ? Array.from({ length: 6 }).map((_, i) => <AnimatedShimmer key={i} style={styles.skeletonCard} />)
               : (data.random || []).map(anime => (
-                <AnimeCard key={`rand-${anime.id}`} data={anime} onPress={() => goToDetails(anime.id)} />
+                <AnimeCard
+                  key={`rand-${anime.id}`}
+                  data={anime}
+                  onPress={() => goToDetails(anime.id, undefined, { animeTitle: anime.title, coverImage: anime.image, type: anime.type, year: anime.year, status: anime.status })}
+                />
               ))
             }
           </ScrollView>
@@ -951,7 +983,7 @@ export default function HomeScreen({ navigation, route }) {
             ) : (
               <TouchableOpacity
                 style={styles.upcomingCard}
-                onPress={() => goToDetails(data.upcoming.id)}
+                onPress={() => goToDetails(data.upcoming.id, undefined, { animeTitle: data.upcoming.title, coverImage: data.upcoming.image })}
                 activeOpacity={0.85}
               >
                 <Image source={{ uri: data.upcoming.image }} style={styles.upcomingImg} resizeMode="cover" />
@@ -993,7 +1025,7 @@ export default function HomeScreen({ navigation, route }) {
                     onPress={() => {
                       // Stop inline video before opening full player
                       setActiveVideoId(null);
-                      goToDetails(anime.id, anime.epIndex);
+                      goToDetails(anime.id, anime.epIndex, { animeTitle: anime.title, coverImage: anime.image });
                     }}
                   />
                 );

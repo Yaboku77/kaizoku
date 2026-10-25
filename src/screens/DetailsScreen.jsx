@@ -15,7 +15,10 @@ import { usePlayer } from '../context/PlayerContext';
 import { useAuth } from '../context/AuthContext';
 import { useAuthModal } from '../context/AuthModalContext';
 import { saveListToCloud, removeFromListCloud, getReactionState, toggleReaction } from '../api/firestore';
-import { scrapeSubDubForTitles } from '../api/scrapers/search.scraper';
+import { safeNavigate } from '../utils/navigationHelper';
+
+const detailsCache = new Map();
+const episodesCache = new Map();
 
 const { width } = Dimensions.get('window');
 const EPISODES_PER_PAGE = 25;
@@ -49,22 +52,58 @@ export default function DetailsScreen({ route, navigation }) {
   const { play } = usePlayer();
   const { user } = useAuth();
   const { openAuthModal } = useAuthModal();
-  const { animeId, isJikanFallback } = route.params; // isJikanFallback kept for nav compat — now triggers ani.zip fallback
-  const [loading, setLoading] = useState(true);
-  const [data, setData] = useState(null);
-  const [episodes, setEpisodes] = useState([]);
-  const [isFetchingEpisodes, setIsFetchingEpisodes] = useState(false);
+  const { animeId, isJikanFallback } = route?.params || {};
+
+  const cachedData = animeId ? detailsCache.get(animeId) : null;
+  const cachedEpisodes = animeId ? episodesCache.get(animeId) : null;
+
+  const initialData = cachedData || (route.params?.animeTitle ? {
+    id: animeId,
+    idMal: null,
+    title: route.params.animeTitle,
+    nativeTitle: '',
+    synonyms: [],
+    bannerImage: route.params.bannerImage || '',
+    coverImage: route.params.coverImage || '',
+    status: route.params.status || '',
+    format: route.params.type || 'TV Show',
+    season: null,
+    seasonYear: route.params.year || '',
+    description: '',
+    averageScore: '?',
+    duration: '?',
+    startDate: null,
+    endDate: null,
+    source: '',
+    countryOfOrigin: 'JP',
+    hashtag: '',
+    genres: [],
+    tags: [],
+    studios: [],
+    externalLinks: [],
+    trailer: null,
+    characters: [],
+    staff: [],
+    relations: [],
+    recommendations: [],
+    episodeCount: null,
+    nextAiringEpisode: null,
+    isInitialPreview: true,
+  } : null);
+
+  const [loading, setLoading] = useState(!cachedData && !initialData);
+  const [data, setData] = useState(initialData);
+  const [episodes, setEpisodes] = useState(cachedEpisodes || []);
+  const [isFetchingEpisodes, setIsFetchingEpisodes] = useState(!cachedEpisodes);
   const [activeTab, setActiveTab] = useState('Overview');
   const [episodePage, setEpisodePage] = useState(1);
-  // Tracks the animeId for which a fetch/enrichment was started — used to discard stale async results
   const fetchIdRef = useRef(animeId);
   const [sortOrder, setSortOrder] = useState('asc');
   const [savedStatus, setSavedStatus] = useState(null);
   const [isSaveMenuOpen, setIsSaveMenuOpen] = useState(false);
-  // Reactions
   const [likes, setLikes] = useState(0);
   const [dislikes, setDislikes] = useState(0);
-  const [userReaction, setUserReaction] = useState(null); // 'like' | 'dislike' | null
+  const [userReaction, setUserReaction] = useState(null);
   const [reacting, setReacting] = useState(false);
 
   useFocusEffect(useCallback(() => {
@@ -255,29 +294,9 @@ export default function DetailsScreen({ route, navigation }) {
           episodeCount: m.episodes,
           nextAiringEpisode: m.nextAiringEpisode?.episode,
         };
+        detailsCache.set(animeId, processed);
         setData(processed);
         fetchTMDBEpisodes(processed);
-
-        // Enrich recommendations with sub/dub from anikoto (fire-and-forget)
-        if (processed.recommendations?.length > 0) {
-          const thisAnimeId = animeId; // capture for closure
-          fetchIdRef.current = animeId;
-          const normTitle = (t) => t.toLowerCase().replace(/[^a-z0-9]/g, '');
-          scrapeSubDubForTitles(processed.recommendations.map(r => r.title))
-            .then(subDubMap => {
-              // Discard if user navigated to a different anime
-              if (fetchIdRef.current !== thisAnimeId) return;
-              setData(prev => prev ? ({
-                ...prev,
-                recommendations: prev.recommendations.map(r => {
-                  if (r.hasSub !== undefined || r.hasDub !== undefined) return r;
-                  const info = subDubMap[normTitle(r.title)];
-                  return info ? { ...r, hasSub: info.hasSub, hasDub: info.hasDub } : r;
-                }),
-              }) : prev);
-            })
-            .catch(() => { });
-        }
       } else {
         throw new Error('No Media data found in Anilist response');
       }
@@ -362,6 +381,7 @@ export default function DetailsScreen({ route, navigation }) {
         isAniZipFallback: true,
       };
 
+      detailsCache.set(anilistId, processed);
       setData(processed);
 
       // Use episodes from ani.zip directly
@@ -371,14 +391,17 @@ export default function DetailsScreen({ route, navigation }) {
           ...ep,
           still_path: null, // we'll use _tvdbImage instead
         }));
+        episodesCache.set(anilistId, mapped);
         setEpisodes(mapped);
       } else if (processed.episodeCount) {
         // Generate dummy episodes as last resort
-        setEpisodes(Array.from({ length: processed.episodeCount }).map((_, i) => ({
+        const dummyEps = Array.from({ length: processed.episodeCount }).map((_, i) => ({
           name: `Episode ${i + 1}`,
           episode_number: i + 1,
           absolute_episode_number: i + 1,
-        })));
+        }));
+        episodesCache.set(anilistId, dummyEps);
+        setEpisodes(dummyEps);
       }
 
       // Try to get backdrop from TMDB using the direct TMDB ID from ani.zip mappings
@@ -408,98 +431,212 @@ export default function DetailsScreen({ route, navigation }) {
   const fetchTMDBEpisodes = async (d) => {
     setIsFetchingEpisodes(true);
     try {
-      const title = d.title;
-      const searchRes = await tmdbFetch(`https://api.themoviedb.org/3/search/tv?api_key=${TMDB_KEY}&query=${encodeURIComponent(title)}`);
-      const searchData = await searchRes.json();
+      // ── Step 1: Query ani.zip (authoritative AniList ID -> episodes & TMDB mapping) ──
+      // ani.zip maps the exact AniList entry (e.g. JJK S2 = 145064, MHA S2 = 21856)
+      // and contains per-season episode numbers, titles, overviews, and TVDB images.
+      let aniZipData = null;
+      let aniZipTmdbId = null;
+      let aniZipEpisodes = [];
 
-      if (!searchData.results?.length) {
-        if (d.episodeCount) {
-          const dummyEps = Array.from({ length: d.episodeCount }).map((_, i) => ({
-            name: `Episode ${i + 1}`,
-            episode_number: i + 1,
-            absolute_episode_number: i + 1,
-          }));
-          setEpisodes(dummyEps);
-        } else {
-          setEpisodes([]);
+      try {
+        const aniZipRes = await fetch(`https://api.ani.zip/mappings?anilist_id=${d.id}`);
+        if (aniZipRes.ok) {
+          aniZipData = await aniZipRes.json();
+          const rawId = aniZipData?.mappings?.themoviedb_id;
+          aniZipTmdbId = rawId ? parseInt(rawId, 10) : null;
+
+          // Extract all non-special, numbered episodes belonging to this season
+          const rawEps = Object.values(aniZipData?.episodes || {})
+            .filter(ep => ep && ep.episode && !isNaN(parseInt(ep.episode, 10)) && parseInt(ep.episode, 10) > 0)
+            .sort((a, b) => parseInt(a.episode, 10) - parseInt(b.episode, 10));
+
+          if (rawEps.length > 0) {
+            aniZipEpisodes = rawEps.map(ep => ({
+              id: ep.tvdbId || ep.anidbEid || `ep-${ep.episode}`,
+              name: ep.title?.en || ep.title?.['x-jat'] || ep.title?.ja || `Episode ${ep.episode}`,
+              episode_number: parseInt(ep.episode, 10),
+              absolute_episode_number: ep.absoluteEpisodeNumber || parseInt(ep.episode, 10),
+              season_number: ep.seasonNumber != null ? parseInt(ep.seasonNumber, 10) : null,
+              air_date: ep.airDate || ep.airdate || '',
+              still_path: null,
+              _tvdbImage: ep.image || null,
+              overview: ep.overview || ep.summary || '',
+              runtime: ep.runtime || ep.length || null,
+            }));
+          }
         }
-        setIsFetchingEpisodes(false);
-        return;
+      } catch (aniZipErr) {
+        console.log('[EpisodeFetch] ani.zip lookup failed:', aniZipErr?.message);
       }
 
-      const possibleTitles = [d.title, d.nativeTitle, ...(d.synonyms || [])].filter(Boolean).map(t => t.toLowerCase().trim());
-      const aniYear = d.seasonYear || d.startDate?.year;
-      let bestShow = searchData.results[0];
-      let bestScore = -1;
+      // ── Step 2: Resolve TMDB show details ──────────────────────────────────
+      let tmdbId = aniZipTmdbId;
+      let tvData = null;
 
-      searchData.results.forEach(r => {
-        const rName = (r.name || r.original_name || '').toLowerCase().trim();
-        let score = 0;
-        if (possibleTitles.includes(rName)) score += 10;
-        else if (possibleTitles.some(t => t.includes(rName) || rName.includes(t))) score += 5;
-        if (r.origin_country?.includes('JP')) score += 5;
-        if (aniYear && r.first_air_date?.startsWith(String(aniYear))) score += 5;
-        if (score > bestScore) { bestScore = score; bestShow = r; }
-      });
+      try {
+        if (tmdbId) {
+          const tvRes = await tmdbFetch(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_KEY}`);
+          tvData = await tvRes.json();
+        } else {
+          // Fallback: search TMDB by title
+          const title = d.title;
+          const searchRes = await tmdbFetch(`https://api.themoviedb.org/3/search/tv?api_key=${TMDB_KEY}&query=${encodeURIComponent(title)}`);
+          const searchData = await searchRes.json();
 
-      const tmdbId = bestShow.id;
-      const tvRes = await tmdbFetch(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_KEY}`);
-      const tvData = await tvRes.json();
+          if (searchData.results?.length > 0) {
+            const possibleTitles = [d.title, d.nativeTitle, ...(d.synonyms || [])].filter(Boolean).map(t => t.toLowerCase().trim());
+            const aniYear = d.seasonYear || d.startDate?.year;
+            let bestShow = searchData.results[0];
+            let bestScore = -1;
 
-      // Inject TMDB backdrop for fallback modes (if not already set via ani.zip direct TMDB lookup)
-      if (d.isAniZipFallback && !d.bannerImage && tvData.backdrop_path) {
-        setData(prev => prev ? { ...prev, bannerImage: `https://image.tmdb.org/t/p/original${tvData.backdrop_path}` } : prev);
-      } else if (d.isJikanFallback && tvData.backdrop_path) {
-        setData(prev => prev ? { ...prev, bannerImage: `https://image.tmdb.org/t/p/original${tvData.backdrop_path}` } : prev);
+            searchData.results.forEach(r => {
+              const rName = (r.name || r.original_name || '').toLowerCase().trim();
+              let score = 0;
+              if (possibleTitles.includes(rName)) score += 10;
+              else if (possibleTitles.some(t => t.includes(rName) || rName.includes(t))) score += 5;
+              if (r.origin_country?.includes('JP')) score += 5;
+              if (aniYear && r.first_air_date?.startsWith(String(aniYear))) score += 5;
+              if (score > bestScore) { bestScore = score; bestShow = r; }
+            });
+
+            tmdbId = bestShow.id;
+            const tvRes = await tmdbFetch(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_KEY}`);
+            tvData = await tvRes.json();
+          }
+        }
+      } catch (tmdbErr) {
+        console.log('[EpisodeFetch] TMDB show lookup failed:', tmdbErr?.message);
       }
 
-      const seasons = tvData.seasons?.filter(s => s.season_number > 0) || [];
+      // Inject TMDB backdrop for fallback modes if available
+      if (tvData?.backdrop_path) {
+        if (d.isAniZipFallback && !d.bannerImage) {
+          setData(prev => prev ? { ...prev, bannerImage: `https://image.tmdb.org/t/p/original${tvData.backdrop_path}` } : prev);
+        } else if (d.isJikanFallback && !d.bannerImage) {
+          setData(prev => prev ? { ...prev, bannerImage: `https://image.tmdb.org/t/p/original${tvData.backdrop_path}` } : prev);
+        }
+      }
 
-      let targetSeason = 1;
-      if (seasons.length > 0) {
-        const matchedSeason = seasons.find(s => {
-          const sName = (s.name || '').toLowerCase().trim();
-          if (sName.length < 3) return false;
-          return possibleTitles.some(t => t.includes(sName) || sName.includes(t));
+      // ── Step 3: Fetch TMDB episode details if available ────────────────────
+      const seasons = tvData?.seasons?.filter(s => s.season_number > 0) || [];
+      let tmdbEps = [];
+
+      if (tmdbId && seasons.length > 0) {
+        try {
+          const firstAniEp = aniZipEpisodes[0];
+          const aniSeasonNumber = firstAniEp?.season_number;
+          const firstAbsoluteNumber = firstAniEp?.absolute_episode_number;
+
+          // Check if TMDB has a season matching ani.zip's seasonNumber (e.g. MHA S2 -> TMDB Season 2)
+          const hasExactSeason = aniSeasonNumber != null && seasons.some(s => s.season_number === aniSeasonNumber);
+
+          if (hasExactSeason) {
+            // Case A: TMDB has distinct seasons (e.g. MHA, Demon Slayer, etc.)
+            const targetSeason = aniSeasonNumber;
+            const startIndex = seasons.findIndex(s => s.season_number === targetSeason);
+            const seasonsToFetch = [];
+            let accumulated = 0;
+            const expectedEps = d.episodeCount || aniZipEpisodes.length;
+
+            if (startIndex !== -1) {
+              for (let i = startIndex; i < seasons.length; i++) {
+                seasonsToFetch.push(seasons[i].season_number);
+                accumulated += seasons[i].episode_count;
+                if (expectedEps && accumulated >= expectedEps - 2) break;
+              }
+            } else {
+              seasonsToFetch.push(targetSeason);
+            }
+
+            const seasonResults = await Promise.all(
+              seasonsToFetch.map(sn => tmdbFetch(`https://api.themoviedb.org/3/tv/${tmdbId}/season/${sn}?api_key=${TMDB_KEY}`).then(r => r.json()))
+            );
+            seasonResults.forEach(sd => { if (sd.episodes) tmdbEps = tmdbEps.concat(sd.episodes); });
+
+          } else if (firstAbsoluteNumber && firstAbsoluteNumber > 1 && seasons.length === 1) {
+            // Case B: TMDB combines multiple seasons into a single Season 1 (e.g. Jujutsu Kaisen with all 59 eps in S1)
+            // Episode 25 in TMDB S1 is Episode 1 of Season 2
+            const s1Res = await tmdbFetch(`https://api.themoviedb.org/3/tv/${tmdbId}/season/${seasons[0].season_number}?api_key=${TMDB_KEY}`);
+            const s1Data = await s1Res.json();
+            const s1Eps = s1Data.episodes || [];
+            const expectedCount = d.episodeCount || aniZipEpisodes.length || 24;
+
+            const startIdx = s1Eps.findIndex(ep => ep.episode_number === firstAbsoluteNumber);
+            if (startIdx !== -1) {
+              tmdbEps = s1Eps.slice(startIdx, startIdx + expectedCount);
+            }
+          } else if (!aniZipEpisodes.length) {
+            // Case C: No ani.zip episode list available — use year / strict title heuristic
+            const possibleTitles = [d.title, d.nativeTitle, ...(d.synonyms || [])].filter(Boolean).map(t => t.toLowerCase().trim());
+            const aniYear = d.seasonYear || d.startDate?.year;
+            let targetSeason = 1;
+            let found = false;
+
+            if (aniYear) {
+              const yearMatch = seasons.find(s => s.air_date?.startsWith(String(aniYear)));
+              if (yearMatch) {
+                targetSeason = yearMatch.season_number;
+                found = true;
+              }
+            }
+            if (!found) {
+              const exactMatch = seasons.find(s => {
+                const sName = (s.name || '').toLowerCase().trim();
+                return sName.length >= 5 && possibleTitles.some(t => t === sName);
+              });
+              if (exactMatch) {
+                targetSeason = exactMatch.season_number;
+                found = true;
+              }
+            }
+            if (!found) {
+              targetSeason = seasons[0].season_number;
+            }
+
+            const targetRes = await tmdbFetch(`https://api.themoviedb.org/3/tv/${tmdbId}/season/${targetSeason}?api_key=${TMDB_KEY}`);
+            const targetData = await targetRes.json();
+            tmdbEps = targetData.episodes || [];
+          }
+        } catch (tmdbEpErr) {
+          console.log('[EpisodeFetch] TMDB episodes fetch error:', tmdbEpErr?.message);
+        }
+      }
+
+      // ── Step 4: Build final episode list ───────────────────────────────────
+      let finalEpisodes = [];
+
+      if (aniZipEpisodes.length > 0) {
+        // ani.zip is authoritative for episode count and season boundaries
+        finalEpisodes = aniZipEpisodes.map((aEp, idx) => {
+          // If we have matching TMDB episodes, enrich with still_path and localized text
+          const tmdbMatch = tmdbEps[idx] || tmdbEps.find(t => t.episode_number === aEp.episode_number || t.episode_number === aEp.absolute_episode_number);
+          return {
+            id: tmdbMatch?.id || aEp.id || `ep-${idx + 1}`,
+            name: aEp.name || tmdbMatch?.name || `Episode ${idx + 1}`,
+            episode_number: idx + 1,
+            absolute_episode_number: idx + 1,
+            air_date: aEp.air_date || tmdbMatch?.air_date || '',
+            still_path: tmdbMatch?.still_path || null,
+            _tvdbImage: aEp._tvdbImage || null,
+            overview: aEp.overview || tmdbMatch?.overview || '',
+            runtime: aEp.runtime || tmdbMatch?.runtime || null,
+          };
         });
-        if (matchedSeason) {
-          targetSeason = matchedSeason.season_number;
-        } else if (aniYear) {
-          const yearMatch = seasons.find(s => s.air_date?.startsWith(String(aniYear)));
-          targetSeason = yearMatch ? yearMatch.season_number : seasons[0].season_number;
-        } else {
-          targetSeason = seasons[0].season_number;
-        }
+      } else if (tmdbEps.length > 0) {
+        finalEpisodes = tmdbEps.map((ep, idx) => ({
+          ...ep,
+          id: ep.id || `ep-${idx + 1}`,
+          episode_number: idx + 1,
+          absolute_episode_number: idx + 1,
+        }));
       }
 
-      const expectedEps = d.episodeCount;
-      const seasonsToFetch = [];
-      let accumulated = 0;
-      const startIndex = seasons.findIndex(s => s.season_number === targetSeason);
-      if (startIndex !== -1) {
-        for (let i = startIndex; i < seasons.length; i++) {
-          seasonsToFetch.push(seasons[i].season_number);
-          accumulated += seasons[i].episode_count;
-          if (expectedEps && accumulated >= expectedEps - 2) break;
-        }
-      } else {
-        seasonsToFetch.push(targetSeason);
-      }
-
-      const seasonResults = await Promise.all(
-        seasonsToFetch.map(sn => tmdbFetch(`https://api.themoviedb.org/3/tv/${tmdbId}/season/${sn}?api_key=${TMDB_KEY}`).then(r => r.json()))
-      );
-
-      let allEps = [];
-      seasonResults.forEach(sd => { if (sd.episodes) allEps = allEps.concat(sd.episodes); });
-
+      // ── Step 5: Filter unreleased episodes ──────────────────────────────────
       const today = new Date();
-      allEps = allEps.filter(ep => {
-        // If Anilist says episode N is next, filter out anything >= N
+      finalEpisodes = finalEpisodes.filter(ep => {
         if (d.nextAiringEpisode && ep.episode_number >= d.nextAiringEpisode) {
           return false;
         }
-        // Fallback: check TMDB air_date
         if (ep.air_date) {
           const airDate = new Date(ep.air_date);
           if (airDate > today) return false;
@@ -507,28 +644,31 @@ export default function DetailsScreen({ route, navigation }) {
         return true;
       });
 
-      if (allEps.length === 0 && expectedEps) {
-        // Fallback: generate dummy episodes if TMDB mapping is broken
-        const releasedCount = d.nextAiringEpisode ? d.nextAiringEpisode - 1 : expectedEps;
-        allEps = Array.from({ length: releasedCount }).map((_, i) => ({
-          name: `Episode ${i + 1}`,
-          episode_number: i + 1,
-          absolute_episode_number: i + 1,
-        }));
+      // ── Step 6: Fallback dummy episodes if needed ───────────────────────────
+      if (finalEpisodes.length === 0) {
+        const fallbackCount = d.nextAiringEpisode ? d.nextAiringEpisode - 1 : (d.episodeCount || 0);
+        if (fallbackCount > 0) {
+          finalEpisodes = Array.from({ length: fallbackCount }).map((_, i) => ({
+            id: `dummy-${i + 1}`,
+            name: `Episode ${i + 1}`,
+            episode_number: i + 1,
+            absolute_episode_number: i + 1,
+          }));
+        }
       }
 
-      setEpisodes(allEps.map((ep, idx) => ({ ...ep, absolute_episode_number: idx + 1 })));
+      episodesCache.set(animeId, finalEpisodes);
+      setEpisodes(finalEpisodes);
     } catch (e) {
-      console.log('TMDB fetch error:', e);
-      // If error occurs, fallback to expectedEps
+      console.log('[EpisodeFetch] Error:', e);
       const fallbackCount = d.nextAiringEpisode ? d.nextAiringEpisode - 1 : (d.episodeCount || 0);
       if (fallbackCount > 0) {
-        const dummyEps = Array.from({ length: fallbackCount }).map((_, i) => ({
+        setEpisodes(Array.from({ length: fallbackCount }).map((_, i) => ({
+          id: `dummy-${i + 1}`,
           name: `Episode ${i + 1}`,
           episode_number: i + 1,
           absolute_episode_number: i + 1,
-        }));
-        setEpisodes(dummyEps);
+        })));
       } else {
         setEpisodes([]);
       }
@@ -605,8 +745,8 @@ export default function DetailsScreen({ route, navigation }) {
           <Ionicons name="arrow-back" size={20} color="#fff" />
         </TouchableOpacity>
         <View style={{ flexDirection: 'row', gap: 16 }}>
-          <TouchableOpacity style={S.iconBtn} onPress={() => navigation.navigate('Notifications')}><Ionicons name="notifications-outline" size={22} color="#e5e7eb" /></TouchableOpacity>
-          <TouchableOpacity style={S.iconBtn} onPress={() => navigation.navigate('Search')}><Ionicons name="search-outline" size={22} color="#e5e7eb" /></TouchableOpacity>
+          <TouchableOpacity style={S.iconBtn} onPress={() => safeNavigate(navigation, 'Notifications')}><Ionicons name="notifications-outline" size={22} color="#e5e7eb" /></TouchableOpacity>
+          <TouchableOpacity style={S.iconBtn} onPress={() => safeNavigate(navigation, 'Search')}><Ionicons name="search-outline" size={22} color="#e5e7eb" /></TouchableOpacity>
         </View>
       </View>
 
@@ -922,7 +1062,7 @@ export default function DetailsScreen({ route, navigation }) {
                 <TouchableOpacity
                   key={`rel-${rel.id}`}
                   style={S.relCard}
-                  onPress={() => navigation.push('Details', { animeId: rel.id })}
+                  onPress={() => safeNavigate(navigation, 'Details', { animeId: rel.id, animeTitle: rel.title, coverImage: rel.coverImage, type: rel.format, year: rel.year })}
                   activeOpacity={0.85}
                 >
                   <Image source={{ uri: rel.coverImage }} style={S.relImg} resizeMode="cover" />
@@ -947,7 +1087,7 @@ export default function DetailsScreen({ route, navigation }) {
                 <TouchableOpacity
                   key={`rec-${rec.id}`}
                   style={S.relCard}
-                  onPress={() => navigation.push('Details', { animeId: rec.id })}
+                  onPress={() => safeNavigate(navigation, 'Details', { animeId: rec.id, animeTitle: rec.title, coverImage: rec.coverImage, type: rec.format, year: rec.year })}
                   activeOpacity={0.85}
                 >
                   <View style={[S.relImg, { aspectRatio: 3 / 4, height: 100, overflow: 'hidden', borderRadius: 10 }]}>

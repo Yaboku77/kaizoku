@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { View, Text, TouchableOpacity } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
+import { safeNavigate, safeReplace } from '../utils/navigationHelper';
 
 export default function NotificationsScreen({ navigation }) {
   const insets = useSafeAreaInsets();
@@ -18,7 +19,7 @@ export default function NotificationsScreen({ navigation }) {
           <Text style={{ color: '#fff', fontSize: 19, fontWeight: '500', letterSpacing: 0.3 }}>Notifications</Text>
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-          <TouchableOpacity onPress={() => { navigation.goBack(); navigation.navigate('Search'); }} style={{ padding: 4 }}>
+          <TouchableOpacity onPress={() => safeReplace(navigation, 'Search')} style={{ padding: 4 }}>
             <Ionicons name="search-outline" size={22} color="#e5e7eb" />
           </TouchableOpacity>
           <TouchableOpacity style={{ padding: 4 }}>

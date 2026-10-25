@@ -5,7 +5,6 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
 import { BlurView } from 'expo-blur';
 import { COLORS } from '../data/constants';
-import AnimatedTabWrapper from '../components/AnimatedTabWrapper';
 import { navigationRef } from './RootNavigation';
 
 import HomeScreen from '../screens/HomeScreen';
@@ -22,17 +21,12 @@ import HistoryScreen from '../screens/HistoryScreen';
 const Tab   = createBottomTabNavigator();
 const Stack = createNativeStackNavigator();
 
-const HomeTab = (props) => <AnimatedTabWrapper><HomeScreen {...props} /></AnimatedTabWrapper>;
-const ScheduleTab = (props) => <AnimatedTabWrapper><ScheduleScreen {...props} /></AnimatedTabWrapper>;
-const BrowseTab = (props) => <AnimatedTabWrapper><BrowseScreen {...props} /></AnimatedTabWrapper>;
-const MyListTab = (props) => <AnimatedTabWrapper><MyListScreen {...props} /></AnimatedTabWrapper>;
-const YouTab = (props) => <AnimatedTabWrapper><YouScreen {...props} /></AnimatedTabWrapper>;
-
 function BottomTabs() {
   return (
     <Tab.Navigator
       screenOptions={({ route }) => ({
         headerShown: false,
+        detachInactiveScreens: false,
         tabBarStyle: {
           position: 'absolute',
           backgroundColor: 'rgba(5,5,5,0.7)',
@@ -61,11 +55,11 @@ function BottomTabs() {
         },
       })}
     >
-      <Tab.Screen name="Home" component={HomeTab} />
-      <Tab.Screen name="Schedule" component={ScheduleTab} />
-      <Tab.Screen name="Browse" component={BrowseTab} />
-      <Tab.Screen name="My List" component={MyListTab} />
-      <Tab.Screen name="You" component={YouTab} />
+      <Tab.Screen name="Home" component={HomeScreen} />
+      <Tab.Screen name="Schedule" component={ScheduleScreen} />
+      <Tab.Screen name="Browse" component={BrowseScreen} />
+      <Tab.Screen name="My List" component={MyListScreen} />
+      <Tab.Screen name="You" component={YouScreen} />
     </Tab.Navigator>
   );
 }

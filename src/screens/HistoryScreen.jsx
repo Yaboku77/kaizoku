@@ -25,29 +25,37 @@ function HistoryCard({ item, onPress }) {
   );
 }
 
+let cachedHistoryScreenData = null;
+
 export default function HistoryScreen({ navigation }) {
-  const [history, setHistory] = useState([]);
+  const [history, setHistory] = useState(cachedHistoryScreenData || []);
   const { user } = useAuth();
   const { play } = usePlayer();
+
+  const updateHistory = useCallback((data) => {
+    cachedHistoryScreenData = data;
+    setHistory(data);
+  }, []);
 
   useFocusEffect(useCallback(() => {
     if (user) {
       getHistoryFromCloud(user.uid)
         .then(cloud => {
-          if (cloud.length > 0) setHistory(cloud);
-          else getHistory().then(setHistory);
+          if (cloud.length > 0) updateHistory(cloud);
+          else getHistory().then(updateHistory);
         })
-        .catch(() => getHistory().then(setHistory));
+        .catch(() => getHistory().then(updateHistory));
     } else {
-      getHistory().then(setHistory);
+      getHistory().then(updateHistory);
     }
-  }, [user]));
+  }, [user, updateHistory]));
 
   const handleClearHistory = () => Alert.alert('Clear History', 'Remove all watch history?', [
     { text: 'Cancel', style: 'cancel' },
     { text: 'Clear All', style: 'destructive', onPress: async () => { 
         await clearHistory(); 
         if (user) await clearHistoryFromCloud(user.uid);
+        cachedHistoryScreenData = [];
         setHistory([]); 
       } 
     },

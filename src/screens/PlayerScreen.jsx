@@ -64,7 +64,7 @@ function EpisodeCard({ ep, isActive, coverImage, onPress }) {
       {/* Thumbnail */}
       <View style={S.epThumb}>
         <Image
-          source={{ uri: ep.still_path ? `https://tmdb-proxy.bgtoons.workers.dev/t/p/w300${ep.still_path}` : coverImage }}
+          source={{ uri: ep._tvdbImage || (ep.still_path ? `https://tmdb-proxy.bgtoons.workers.dev/t/p/w300${ep.still_path}` : coverImage) }}
           style={StyleSheet.absoluteFill}
           resizeMode="cover"
           onError={() => { }}
@@ -245,121 +245,202 @@ const PlayerScreenInner = () => {
   }, [data.animeId, data.episodeIndex, data.episodes]);
 
   useEffect(() => {
-    if (animeId && fallbackAttemptedRef.current !== animeId && (!episodes || episodes.length === 0 || !episodes[0]?.still_path)) {
+    if (animeId && fallbackAttemptedRef.current !== animeId && (!episodes || episodes.length === 0)) {
       fallbackAttemptedRef.current = animeId;
       const fetchFallbackData = async () => {
         try {
-          const DETAILS_QUERY = `
-            query ($id: Int) {
-              Media (id: $id, type: ANIME) {
-                id title { romaji english native } synonyms startDate { year month day }
-                episodes nextAiringEpisode { episode }
-              }
-            }
-          `;
-          const res = await fetch('https://graphql.anilist.co', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-            body: JSON.stringify({ query: DETAILS_QUERY, variables: { id: parseInt(animeId) } }),
-          });
-          const json = await res.json();
-          if (json.data?.Media) {
-            const m = json.data.Media;
-            const title = m.title?.english || m.title?.romaji || animeTitle;
-            const fetchedNativeTitle = m.title?.native;
-            const fetchedSynonyms = m.synonyms || [];
-            const episodeCount = m.episodes;
-            const nextAiringEpisode = m.nextAiringEpisode?.episode;
-            const aniYear = m.startDate?.year;
+          // ── Step 1: Query ani.zip (authoritative mapping & episode list) ──
+          let aniZipData = null;
+          let aniZipTmdbId = null;
+          let aniZipEpisodes = [];
 
-            const searchRes = await tmdbFetch(`https://api.themoviedb.org/3/search/tv?api_key=${TMDB_KEY}&query=${encodeURIComponent(title)}`);
-            const searchData = await searchRes.json();
+          try {
+            const aniZipRes = await fetch(`https://api.ani.zip/mappings?anilist_id=${animeId}`);
+            if (aniZipRes.ok) {
+              aniZipData = await aniZipRes.json();
+              const rawId = aniZipData?.mappings?.themoviedb_id;
+              aniZipTmdbId = rawId ? parseInt(rawId, 10) : null;
 
-            let allEps = [];
-            if (searchData.results?.length) {
-              const possibleTitles = [title, fetchedNativeTitle, ...fetchedSynonyms].filter(Boolean).map(t => t.toLowerCase().trim());
-              let bestShow = searchData.results[0];
-              let bestScore = -1;
-              searchData.results.forEach(r => {
-                const rName = (r.name || r.original_name || '').toLowerCase().trim();
-                let score = 0;
-                if (possibleTitles.includes(rName)) score += 10;
-                else if (possibleTitles.some(t => t.includes(rName) || rName.includes(t))) score += 5;
-                if (r.origin_country?.includes('JP')) score += 5;
-                if (aniYear && r.first_air_date?.startsWith(String(aniYear))) score += 5;
-                if (score > bestScore) { bestScore = score; bestShow = r; }
-              });
+              const rawEps = Object.values(aniZipData?.episodes || {})
+                .filter(ep => ep && ep.episode && !isNaN(parseInt(ep.episode, 10)) && parseInt(ep.episode, 10) > 0)
+                .sort((a, b) => parseInt(a.episode, 10) - parseInt(b.episode, 10));
 
-              const tmdbId = bestShow.id;
-              const tvRes = await tmdbFetch(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_KEY}`);
-              const tvData = await tvRes.json();
-              const seasons = tvData.seasons?.filter(s => s.season_number > 0) || [];
-
-              let targetSeason = 1;
-              if (seasons.length > 0) {
-                const matchedSeason = seasons.find(s => {
-                  const sName = (s.name || '').toLowerCase().trim();
-                  if (sName.length < 3) return false;
-                  return possibleTitles.some(t => t.includes(sName) || sName.includes(t));
-                });
-                if (matchedSeason) {
-                  targetSeason = matchedSeason.season_number;
-                } else if (aniYear) {
-                  const yearMatch = seasons.find(s => s.air_date?.startsWith(String(aniYear)));
-                  targetSeason = yearMatch ? yearMatch.season_number : seasons[0].season_number;
-                } else {
-                  targetSeason = seasons[0].season_number;
-                }
-              }
-
-              const expectedEps = episodeCount;
-              const seasonsToFetch = [];
-              let accumulated = 0;
-              const startIndex = seasons.findIndex(s => s.season_number === targetSeason);
-              if (startIndex !== -1) {
-                for (let i = startIndex; i < seasons.length; i++) {
-                  seasonsToFetch.push(seasons[i].season_number);
-                  accumulated += seasons[i].episode_count;
-                  if (expectedEps && accumulated >= expectedEps - 2) break;
-                }
-              } else {
-                seasonsToFetch.push(targetSeason);
-              }
-
-              const seasonResults = await Promise.all(
-                seasonsToFetch.map(sn => tmdbFetch(`https://api.themoviedb.org/3/tv/${tmdbId}/season/${sn}?api_key=${TMDB_KEY}`).then(r => r.json()))
-              );
-
-              seasonResults.forEach(sd => { if (sd.episodes) allEps = allEps.concat(sd.episodes); });
-
-              const today = new Date();
-              allEps = allEps.filter(ep => {
-                if (nextAiringEpisode && ep.episode_number >= nextAiringEpisode) return false;
-                if (ep.air_date) {
-                  const airDate = new Date(ep.air_date);
-                  if (airDate > today) return false;
-                }
-                return true;
-              });
-            }
-
-            if (allEps.length === 0) {
-              const fallbackCount = nextAiringEpisode ? nextAiringEpisode - 1 : (episodeCount || 0);
-              if (fallbackCount > 0) {
-                allEps = Array.from({ length: fallbackCount }).map((_, i) => ({
-                  name: `Episode ${i + 1}`,
-                  episode_number: i + 1,
-                  absolute_episode_number: i + 1,
+              if (rawEps.length > 0) {
+                aniZipEpisodes = rawEps.map(ep => ({
+                  id: ep.tvdbId || ep.anidbEid || `ep-${ep.episode}`,
+                  name: ep.title?.en || ep.title?.['x-jat'] || ep.title?.ja || `Episode ${ep.episode}`,
+                  episode_number: parseInt(ep.episode, 10),
+                  absolute_episode_number: ep.absoluteEpisodeNumber || parseInt(ep.episode, 10),
+                  season_number: ep.seasonNumber != null ? parseInt(ep.seasonNumber, 10) : null,
+                  air_date: ep.airDate || ep.airdate || '',
+                  still_path: null,
+                  _tvdbImage: ep.image || null,
+                  overview: ep.overview || ep.summary || '',
+                  runtime: ep.runtime || ep.length || null,
                 }));
               }
             }
+          } catch (aniZipErr) {
+            console.log('[PlayerFallback] ani.zip lookup failed:', aniZipErr?.message);
+          }
 
-            if (allEps.length > 0) {
-              setEpisodes(allEps.map((ep, idx) => ({ ...ep, absolute_episode_number: idx + 1 })));
+          // ── Step 2: Fetch AniList media details if needed ──
+          let episodeCount = null;
+          let nextAiringEpisode = null;
+          let aniYear = null;
+          let possibleTitles = [animeTitle].filter(Boolean).map(t => t.toLowerCase().trim());
+
+          try {
+            const DETAILS_QUERY = `
+              query ($id: Int) {
+                Media (id: $id, type: ANIME) {
+                  id title { romaji english native } synonyms startDate { year month day }
+                  episodes nextAiringEpisode { episode }
+                }
+              }
+            `;
+            const res = await fetch('https://graphql.anilist.co', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+              body: JSON.stringify({ query: DETAILS_QUERY, variables: { id: parseInt(animeId, 10) } }),
+            });
+            const json = await res.json();
+            if (json.data?.Media) {
+              const m = json.data.Media;
+              const fetchedTitle = m.title?.english || m.title?.romaji;
+              if (fetchedTitle) possibleTitles.push(fetchedTitle.toLowerCase().trim());
+              if (m.title?.native) possibleTitles.push(m.title.native.toLowerCase().trim());
+              if (m.synonyms) m.synonyms.forEach(s => possibleTitles.push(s.toLowerCase().trim()));
+              episodeCount = m.episodes;
+              nextAiringEpisode = m.nextAiringEpisode?.episode;
+              aniYear = m.startDate?.year;
+            }
+          } catch (alErr) {
+            console.log('[PlayerFallback] AniList query failed:', alErr?.message);
+          }
+
+          // ── Step 3: Resolve TMDB show details ──
+          let tmdbId = aniZipTmdbId;
+          let tvData = null;
+
+          try {
+            if (tmdbId) {
+              const tvRes = await tmdbFetch(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_KEY}`);
+              tvData = await tvRes.json();
+            } else if (animeTitle) {
+              const searchRes = await tmdbFetch(`https://api.themoviedb.org/3/search/tv?api_key=${TMDB_KEY}&query=${encodeURIComponent(animeTitle)}`);
+              const searchData = await searchRes.json();
+              if (searchData.results?.length > 0) {
+                let bestShow = searchData.results[0];
+                let bestScore = -1;
+                searchData.results.forEach(r => {
+                  const rName = (r.name || r.original_name || '').toLowerCase().trim();
+                  let score = 0;
+                  if (possibleTitles.includes(rName)) score += 10;
+                  else if (possibleTitles.some(t => t.includes(rName) || rName.includes(t))) score += 5;
+                  if (r.origin_country?.includes('JP')) score += 5;
+                  if (aniYear && r.first_air_date?.startsWith(String(aniYear))) score += 5;
+                  if (score > bestScore) { bestScore = score; bestShow = r; }
+                });
+                tmdbId = bestShow.id;
+                const tvRes = await tmdbFetch(`https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_KEY}`);
+                tvData = await tvRes.json();
+              }
+            }
+          } catch (tmdbErr) {
+            console.log('[PlayerFallback] TMDB show lookup failed:', tmdbErr?.message);
+          }
+
+          // ── Step 4: Fetch TMDB episodes ──
+          const seasons = tvData?.seasons?.filter(s => s.season_number > 0) || [];
+          let tmdbEps = [];
+
+          if (tmdbId && seasons.length > 0) {
+            try {
+              const firstAniEp = aniZipEpisodes[0];
+              const aniSeasonNumber = firstAniEp?.season_number;
+              const firstAbsoluteNumber = firstAniEp?.absolute_episode_number;
+              const hasExactSeason = aniSeasonNumber != null && seasons.some(s => s.season_number === aniSeasonNumber);
+
+              if (hasExactSeason) {
+                const targetSeason = aniSeasonNumber;
+                const startIndex = seasons.findIndex(s => s.season_number === targetSeason);
+                const seasonsToFetch = [];
+                let accumulated = 0;
+                const expectedEps = episodeCount || aniZipEpisodes.length;
+                if (startIndex !== -1) {
+                  for (let i = startIndex; i < seasons.length; i++) {
+                    seasonsToFetch.push(seasons[i].season_number);
+                    accumulated += seasons[i].episode_count;
+                    if (expectedEps && accumulated >= expectedEps - 2) break;
+                  }
+                } else {
+                  seasonsToFetch.push(targetSeason);
+                }
+
+                const seasonResults = await Promise.all(
+                  seasonsToFetch.map(sn => tmdbFetch(`https://api.themoviedb.org/3/tv/${tmdbId}/season/${sn}?api_key=${TMDB_KEY}`).then(r => r.json()))
+                );
+                seasonResults.forEach(sd => { if (sd.episodes) tmdbEps = tmdbEps.concat(sd.episodes); });
+
+              } else if (firstAbsoluteNumber && firstAbsoluteNumber > 1 && seasons.length === 1) {
+                const s1Res = await tmdbFetch(`https://api.themoviedb.org/3/tv/${tmdbId}/season/${seasons[0].season_number}?api_key=${TMDB_KEY}`);
+                const s1Data = await s1Res.json();
+                const s1Eps = s1Data.episodes || [];
+                const expectedCount = episodeCount || aniZipEpisodes.length || 24;
+                const startIdx = s1Eps.findIndex(ep => ep.episode_number === firstAbsoluteNumber);
+                if (startIdx !== -1) {
+                  tmdbEps = s1Eps.slice(startIdx, startIdx + expectedCount);
+                }
+              }
+            } catch (tmdbEpErr) {
+              console.log('[PlayerFallback] TMDB episodes fetch error:', tmdbEpErr?.message);
             }
           }
+
+          // ── Step 5: Merge ani.zip and TMDB episodes ──
+          let finalEpisodes = [];
+          if (aniZipEpisodes.length > 0) {
+            finalEpisodes = aniZipEpisodes.map((aEp, idx) => {
+              const tmdbMatch = tmdbEps[idx] || tmdbEps.find(t => t.episode_number === aEp.episode_number || t.episode_number === aEp.absolute_episode_number);
+              return {
+                id: tmdbMatch?.id || aEp.id || `ep-${idx + 1}`,
+                name: aEp.name || tmdbMatch?.name || `Episode ${idx + 1}`,
+                episode_number: idx + 1,
+                absolute_episode_number: idx + 1,
+                air_date: aEp.air_date || tmdbMatch?.air_date || '',
+                still_path: tmdbMatch?.still_path || null,
+                _tvdbImage: aEp._tvdbImage || null,
+                overview: aEp.overview || tmdbMatch?.overview || '',
+                runtime: aEp.runtime || tmdbMatch?.runtime || null,
+              };
+            });
+          } else if (tmdbEps.length > 0) {
+            finalEpisodes = tmdbEps.map((ep, idx) => ({
+              ...ep,
+              id: ep.id || `ep-${idx + 1}`,
+              episode_number: idx + 1,
+              absolute_episode_number: idx + 1,
+            }));
+          }
+
+          if (finalEpisodes.length === 0) {
+            const fallbackCount = nextAiringEpisode ? nextAiringEpisode - 1 : (episodeCount || 0);
+            if (fallbackCount > 0) {
+              finalEpisodes = Array.from({ length: fallbackCount }).map((_, i) => ({
+                id: `dummy-${i + 1}`,
+                name: `Episode ${i + 1}`,
+                episode_number: i + 1,
+                absolute_episode_number: i + 1,
+              }));
+            }
+          }
+
+          if (finalEpisodes.length > 0) {
+            setEpisodes(finalEpisodes);
+          }
         } catch (err) {
-          console.log('Player fallback fetch error:', err);
+          console.log('[PlayerFallback] error:', err);
         }
       };
       fetchFallbackData();
@@ -1279,7 +1360,7 @@ const PlayerScreenInner = () => {
       episodeIndex: currentEpIdx,
       episodeTitle: episodes[currentEpIdx]?.name || `Episode ${currentEpIdx + 1}`,
       totalEpisodes: episodes.length,
-      episodeImage: episodes[currentEpIdx]?.still_path ? `https://tmdb-proxy.bgtoons.workers.dev/t/p/original${episodes[currentEpIdx].still_path}` : null,
+      episodeImage: episodes[currentEpIdx]?._tvdbImage || (episodes[currentEpIdx]?.still_path ? `https://tmdb-proxy.bgtoons.workers.dev/t/p/original${episodes[currentEpIdx].still_path}` : null),
     };
     saveToHistory(historyEntry);
     if (user?.uid) {

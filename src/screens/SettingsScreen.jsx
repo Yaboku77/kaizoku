@@ -9,6 +9,7 @@ import { useAuthModal } from '../context/AuthModalContext';
 import EditProfileModal from './EditProfileModal';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { fetchViewer } from '../api/anilist';
+import packageJson from '../../package.json';
 
 export default function SettingsScreen({ navigation }) {
   const { prefs, updatePrefs } = usePlayer();
@@ -271,7 +272,7 @@ export default function SettingsScreen({ navigation }) {
         <View style={styles.section}>
           <View style={styles.infoRow}>
             <Text style={styles.infoLabel}>Version</Text>
-            <Text style={styles.infoValue}>1.0.0</Text>
+            <Text style={styles.infoValue}>{packageJson.version}</Text>
           </View>
           <View style={styles.infoRow}>
             <Text style={styles.infoLabel}>Data Source</Text>

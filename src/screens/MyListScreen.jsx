@@ -6,8 +6,11 @@ import { useFocusEffect } from '@react-navigation/native';
 import { getList } from '../data/constants';
 import { useAuth } from '../context/AuthContext';
 import { getListFromCloud } from '../api/firestore';
+import { safeNavigate } from '../utils/navigationHelper';
 
 const { width } = Dimensions.get('window');
+
+let cachedMyListData = null;
 
 const TABS = [
   { label: 'All', icon: 'list-outline' },
@@ -26,8 +29,13 @@ export default function MyListScreen({ navigation }) {
   const [isSortMenuOpen, setIsSortMenuOpen] = useState(false);
   const [sortBy, setSortBy] = useState('Last Edited');
   const [sortOrder, setSortOrder] = useState('desc');
-  const [listData, setListData] = useState([]);
+  const [listData, setListData] = useState(cachedMyListData || []);
   const { user } = useAuth();
+
+  const updateList = useCallback((data) => {
+    cachedMyListData = data;
+    setListData(data);
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
@@ -35,14 +43,14 @@ export default function MyListScreen({ navigation }) {
         // prefer cloud list when signed in
         getListFromCloud(user.uid)
           .then(cloud => {
-            if (cloud.length > 0) setListData(cloud);
-            else getList().then(setListData);
+            if (cloud.length > 0) updateList(cloud);
+            else getList().then(updateList);
           })
-          .catch(() => getList().then(setListData));
+          .catch(() => getList().then(updateList));
       } else {
-        getList().then(data => setListData(data));
+        getList().then(updateList);
       }
-    }, [user])
+    }, [user, updateList])
   );
 
   const filteredList = listData.filter(item => {
@@ -75,10 +83,10 @@ export default function MyListScreen({ navigation }) {
           <Text style={styles.headerTitle}>Watchlist</Text>
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 16 }}>
-          <TouchableOpacity style={styles.iconBtn} onPress={() => navigation.navigate('Notifications')}>
+          <TouchableOpacity style={styles.iconBtn} onPress={() => safeNavigate(navigation, 'Notifications')}>
             <Ionicons name="notifications-outline" size={22} color="#e5e7eb" />
           </TouchableOpacity>
-          <TouchableOpacity style={styles.iconBtn} onPress={() => navigation.navigate('Search')}>
+          <TouchableOpacity style={styles.iconBtn} onPress={() => safeNavigate(navigation, 'Search')}>
             <Ionicons name="search-outline" size={22} color="#e5e7eb" />
           </TouchableOpacity>
         </View>
@@ -155,7 +163,18 @@ export default function MyListScreen({ navigation }) {
         ) : (
           <ScrollView contentContainerStyle={styles.listGrid}>
             {filteredList.map(item => (
-              <TouchableOpacity key={item.animeId} style={styles.card} onPress={() => navigation.navigate('Details', { animeId: item.animeId })}>
+              <TouchableOpacity
+                key={item.animeId}
+                style={styles.card}
+                onPress={() => safeNavigate(navigation, 'Details', {
+                  animeId: item.animeId,
+                  animeTitle: item.animeTitle,
+                  coverImage: item.coverImage,
+                  type: item.format,
+                  year: item.year,
+                  status: item.status,
+                })}
+              >
                 <Image source={{ uri: item.coverImage }} style={styles.cardImg} />
                 <View style={styles.cardInfo}>
                   <Text style={styles.cardTitle} numberOfLines={2}>{item.animeTitle}</Text>

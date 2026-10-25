@@ -5,7 +5,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
-import { scrapeSubDubForTitles } from '../api/scrapers/search.scraper';
+import { safeReplace } from '../utils/navigationHelper';
 
 export default function SearchScreen({ navigation }) {
   const insets = useSafeAreaInsets();
@@ -13,8 +13,6 @@ export default function SearchScreen({ navigation }) {
   const [searchResults, setSearchResults] = useState([]);
   const [searchLoading, setSearchLoading] = useState(false);
   const searchDebounceRef = useRef(null);
-  // Incremented on every new search so stale enrichments can be discarded
-  const enrichGenRef = useRef(0);
 
   return (
     <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : 'height'} style={{ flex: 1 }}>
@@ -63,29 +61,15 @@ export default function SearchScreen({ navigation }) {
                         type: m.format === 'TV' ? 'TV Show' : (m.format || 'TV'),
                         year: m.seasonYear,
                         status: m.status,
+                        hasSub: true,
                       }));
                       setSearchResults(mapped);
-                      // Enrich with sub/dub from anikoto (fire-and-forget)
-                      // Capture current generation so stale enrichments are discarded
-                      const myGen = ++enrichGenRef.current;
-                      const norm = (t) => t.toLowerCase().replace(/[^a-z0-9]/g, '');
-                      scrapeSubDubForTitles(mapped.map(c => c.title))
-                        .then(subDubMap => {
-                          // Discard if a newer search already ran
-                          if (enrichGenRef.current !== myGen) return;
-                          setSearchResults(prev => prev.map(c => {
-                            if (c.hasSub !== undefined || c.hasDub !== undefined) return c;
-                            const info = subDubMap[norm(c.title)];
-                            return info ? { ...c, hasSub: info.hasSub, hasDub: info.hasDub } : c;
-                          }));
-                        })
-                        .catch(() => {});
                     } catch (_) { 
                       console.log("Search Anilist error, AniList may be offline");
                       setSearchResults([]);
                     }
                     finally { setSearchLoading(false); }
-                  }, 400);
+                  }, 300);
                 }}
                 placeholder="Start searching..."
                 placeholderTextColor="#6b7280"
@@ -93,7 +77,7 @@ export default function SearchScreen({ navigation }) {
                 returnKeyType="search"
                 onSubmitEditing={() => {
                   if (searchQuery.trim()) {
-                    navigation.replace('Browse', { searchQuery: searchQuery.trim() });
+                    safeReplace(navigation, 'Browse', { searchQuery: searchQuery.trim() });
                   }
                 }}
               />
@@ -119,7 +103,14 @@ export default function SearchScreen({ navigation }) {
                     key={anime.id}
                     style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingHorizontal: 16, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: '#1a1a1a' }}
                     onPress={() => {
-                      navigation.replace('Details', { animeId: anime.id });
+                      safeReplace(navigation, 'Details', {
+                        animeId: anime.id,
+                        animeTitle: anime.title,
+                        coverImage: anime.image,
+                        type: anime.type,
+                        year: anime.year,
+                        status: anime.status,
+                      });
                     }}
                     activeOpacity={0.7}
                   >

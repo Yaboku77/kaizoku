@@ -9,6 +9,10 @@ import { useAuth } from '../context/AuthContext';
 import { useAuthModal } from '../context/AuthModalContext';
 import { clearHistoryFromCloud, getHistoryFromCloud, getListFromCloud } from '../api/firestore';
 import EditProfileModal from './EditProfileModal';
+import { safeNavigate } from '../utils/navigationHelper';
+
+let cachedHistory = null;
+let cachedWatchlist = null;
 
 // ─── History card ─────────────────────────────────────────────────────────────
 function HistoryCard({ item, onPress }) {
@@ -109,30 +113,40 @@ export default function YouScreen({ navigation }) {
   const { user, signOut } = useAuth();
   const { openAuthModal } = useAuthModal();
 
-  const [history,        setHistory]        = useState([]);
-  const [watchlist,      setWatchlist]      = useState([]);
+  const [history,        setHistory]        = useState(cachedHistory || []);
+  const [watchlist,      setWatchlist]      = useState(cachedWatchlist || []);
   const [editModalOpen,  setEditModalOpen]  = useState(false);
+
+  const updateHistory = useCallback((data) => {
+    cachedHistory = data;
+    setHistory(data);
+  }, []);
+
+  const updateWatchlist = useCallback((data) => {
+    cachedWatchlist = data;
+    setWatchlist(data);
+  }, []);
 
   useFocusEffect(useCallback(() => {
     if (user) {
       getHistoryFromCloud(user.uid)
         .then(cloud => {
-          if (cloud.length > 0) setHistory(cloud);
-          else getHistory().then(setHistory);
+          if (cloud.length > 0) updateHistory(cloud);
+          else getHistory().then(updateHistory);
         })
-        .catch(() => getHistory().then(setHistory));
+        .catch(() => getHistory().then(updateHistory));
         
       getListFromCloud(user.uid)
         .then(cloud => {
-          if (cloud.length > 0) setWatchlist(cloud);
-          else getList().then(setWatchlist);
+          if (cloud.length > 0) updateWatchlist(cloud);
+          else getList().then(updateWatchlist);
         })
-        .catch(() => getList().then(setWatchlist));
+        .catch(() => getList().then(updateWatchlist));
     } else {
-      getHistory().then(setHistory);
-      getList().then(setWatchlist);
+      getHistory().then(updateHistory);
+      getList().then(updateWatchlist);
     }
-  }, [user]));
+  }, [user, updateHistory, updateWatchlist]));
 
   const handleClearHistory = () => Alert.alert('Clear History', 'Remove all watch history?', [
     { text: 'Cancel', style: 'cancel' },
@@ -141,6 +155,7 @@ export default function YouScreen({ navigation }) {
       onPress: async () => {
         await clearHistory();
         if (user) await clearHistoryFromCloud(user.uid);
+        cachedHistory = [];
         setHistory([]);
       },
     },
@@ -161,13 +176,13 @@ export default function YouScreen({ navigation }) {
           <Ionicons name="arrow-back" size={22} color="#fff" />
         </TouchableOpacity>
         <View style={{ flexDirection: 'row', gap: 16 }}>
-          <TouchableOpacity style={ST.iconBtn} onPress={() => navigation.navigate('Notifications')}>
+          <TouchableOpacity style={ST.iconBtn} onPress={() => safeNavigate(navigation, 'Notifications')}>
             <Ionicons name="notifications-outline" size={22} color="#e5e7eb" />
           </TouchableOpacity>
-          <TouchableOpacity style={ST.iconBtn} onPress={() => navigation.navigate('Search')}>
+          <TouchableOpacity style={ST.iconBtn} onPress={() => safeNavigate(navigation, 'Search')}>
             <Ionicons name="search-outline" size={22} color="#e5e7eb" />
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => navigation.navigate('Settings')} style={ST.iconBtn}>
+          <TouchableOpacity onPress={() => safeNavigate(navigation, 'Settings')} style={ST.iconBtn}>
             <Ionicons name="settings-outline" size={22} color="#e5e7eb" />
           </TouchableOpacity>
         </View>
@@ -221,7 +236,7 @@ export default function YouScreen({ navigation }) {
                   <Text style={ST.clearBtnText}>Clear</Text>
                 </TouchableOpacity>
               )}
-              <TouchableOpacity style={ST.viewAllBtn} onPress={() => navigation.navigate('History')}>
+              <TouchableOpacity style={ST.viewAllBtn} onPress={() => safeNavigate(navigation, 'History')}>
                 <Text style={ST.viewAllText}>View all</Text>
               </TouchableOpacity>
             </View>
@@ -239,8 +254,10 @@ export default function YouScreen({ navigation }) {
                   <HistoryCard
                     key={`${item.animeId}_${item.episodeIndex}_${idx}`}
                     item={item}
-                    onPress={() => navigation.navigate('Details', {
+                    onPress={() => safeNavigate(navigation, 'Details', {
                       animeId: item.animeId,
+                      animeTitle: item.animeTitle,
+                      coverImage: item.episodeImage || item.bannerImage || item.coverImage,
                       autoPlayEpisode: item.episodeIndex,
                     })}
                   />
@@ -254,7 +271,7 @@ export default function YouScreen({ navigation }) {
         <View style={ST.section}>
           <View style={ST.sectionHeader}>
             <Text style={ST.sectionTitle}>Watchlist</Text>
-            <TouchableOpacity style={ST.viewAllBtn} onPress={() => navigation.navigate('My List')}>
+            <TouchableOpacity style={ST.viewAllBtn} onPress={() => safeNavigate(navigation, 'My List')}>
               <Text style={ST.viewAllText}>View all</Text>
             </TouchableOpacity>
           </View>
@@ -271,7 +288,14 @@ export default function YouScreen({ navigation }) {
                   <WatchlistCard
                     key={`${item.animeId}_${idx}`}
                     item={item}
-                    onPress={() => navigation.navigate('Details', { animeId: item.animeId })}
+                    onPress={() => safeNavigate(navigation, 'Details', {
+                      animeId: item.animeId,
+                      animeTitle: item.animeTitle,
+                      coverImage: item.coverImage,
+                      type: item.format,
+                      year: item.year,
+                      status: item.status,
+                    })}
                   />
                 ))}
               </View>
@@ -281,7 +305,7 @@ export default function YouScreen({ navigation }) {
 
         {/* ── Action links ──────────────────────────────────────────────── */}
         <View style={ST.links}>
-          <TouchableOpacity style={ST.linkRow} onPress={() => navigation.navigate('Settings')}>
+          <TouchableOpacity style={ST.linkRow} onPress={() => safeNavigate(navigation, 'Settings')}>
             <Ionicons name="settings-outline" size={22} color="#9ca3af" />
             <Text style={ST.linkText}>Settings</Text>
           </TouchableOpacity>

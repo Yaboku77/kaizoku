@@ -3,6 +3,9 @@ import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Image } from 'rea
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { AnimatedShimmer } from '../components/SharedComponents';
+import { safeNavigate } from '../utils/navigationHelper';
+
+const scheduleCache = new Map();
 
 const SCHEDULE_QUERY = `
 query($airingAt_greater: Int, $airingAt_lesser: Int) {
@@ -25,13 +28,8 @@ function getDayDates() {
   return days;
 }
 
-export default function ScheduleScreen({ navigation }) {
-  const scheduleDates = getDayDates();
-  const [selectedDate, setSelectedDate] = useState(scheduleDates[1]);
-  const [schedule, setSchedule] = useState([]);
-  const [loading, setLoading] = useState(true);
+function ClockHeader() {
   const [currentTime, setCurrentTime] = useState('');
-
   useEffect(() => {
     const update = () => {
       setCurrentTime(new Date().toLocaleString('en-US', {
@@ -44,9 +42,34 @@ export default function ScheduleScreen({ navigation }) {
     return () => clearInterval(timer);
   }, []);
 
-  useEffect(() => { fetchSchedule(selectedDate); }, [selectedDate]);
+  return <Text style={styles.headerTime}>{currentTime || 'Loading...'}</Text>;
+}
+
+export default function ScheduleScreen({ navigation }) {
+  const scheduleDates = getDayDates();
+  const [selectedDate, setSelectedDate] = useState(scheduleDates[1]);
+  const initialKey = scheduleDates[1].toDateString();
+  const initialSchedule = scheduleCache.get(initialKey);
+  const [schedule, setSchedule] = useState(initialSchedule || []);
+  const [loading, setLoading] = useState(!initialSchedule);
+
+  useEffect(() => {
+    const key = selectedDate.toDateString();
+    if (scheduleCache.has(key)) {
+      setSchedule(scheduleCache.get(key));
+      setLoading(false);
+    } else {
+      fetchSchedule(selectedDate);
+    }
+  }, [selectedDate]);
 
   const fetchSchedule = async (day) => {
+    const key = day.toDateString();
+    if (scheduleCache.has(key)) {
+      setSchedule(scheduleCache.get(key));
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     const start = new Date(day); start.setHours(0, 0, 0, 0);
     const end = new Date(day); end.setHours(23, 59, 59, 999);
@@ -65,7 +88,9 @@ export default function ScheduleScreen({ navigation }) {
       const json = await res.json();
       if (!res.ok || json.errors) throw new Error("Anilist API error");
 
-      setSchedule(json.data?.Page?.airingSchedules || []);
+      const items = json.data?.Page?.airingSchedules || [];
+      scheduleCache.set(key, items);
+      setSchedule(items);
     } catch (e) {
       console.log('Schedule fetch failed (AniList may be offline):', e);
       setSchedule([]);
@@ -93,17 +118,17 @@ export default function ScheduleScreen({ navigation }) {
             <Ionicons name="arrow-back" size={22} color="#fff" />
           </TouchableOpacity>
           <View style={{ flexDirection: 'row', gap: 16 }}>
-            <TouchableOpacity style={styles.iconBtn} onPress={() => navigation.navigate('Notifications')}>
+            <TouchableOpacity style={styles.iconBtn} onPress={() => safeNavigate(navigation, 'Notifications')}>
               <Ionicons name="notifications-outline" size={22} color="#e5e7eb" />
             </TouchableOpacity>
-            <TouchableOpacity style={styles.iconBtn} onPress={() => navigation.navigate('Search')}>
+            <TouchableOpacity style={styles.iconBtn} onPress={() => safeNavigate(navigation, 'Search')}>
               <Ionicons name="search-outline" size={22} color="#e5e7eb" />
             </TouchableOpacity>
           </View>
         </View>
         <View style={styles.headerTitleRow}>
           <Text style={styles.headerTitle}>Estimated Schedule</Text>
-          <Text style={styles.headerTime}>{currentTime || 'Loading...'}</Text>
+          <ClockHeader />
         </View>
       </View>
 
@@ -161,7 +186,11 @@ export default function ScheduleScreen({ navigation }) {
               {/* Card */}
               <TouchableOpacity
                 style={styles.card}
-                onPress={() => navigation.navigate('Details', { animeId: item.media.id })}
+                onPress={() => safeNavigate(navigation, 'Details', {
+                  animeId: item.media.id,
+                  animeTitle: item.media.title.english || item.media.title.romaji,
+                  coverImage: item.media.coverImage?.large,
+                })}
                 activeOpacity={0.85}
               >
                 <Image
